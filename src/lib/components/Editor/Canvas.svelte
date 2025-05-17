@@ -50,14 +50,76 @@
     if (previousPage) {
       console.log(`Saving previous page ${previousPage} before switching`);
       
-      // Force save of current page with additional verification
-      const currentObjects = canvas.getObjects();
-      console.log(`Currently ${currentObjects.length} objects on canvas before saving previous page`);
-      if (currentObjects.length > 0) {
-        console.log(`Object types: ${currentObjects.map(obj => obj.type).join(', ')}`);
+      // Save the current page to the correct previous page ID
+      const pageToSaveIndex = $currentDocument.pages.findIndex(p => p.id === previousPage);
+      if (pageToSaveIndex >= 0) {
+        // Force save of current page with additional verification
+        const currentObjects = canvas.getObjects();
+        console.log(`Currently ${currentObjects.length} objects on canvas before saving page ${previousPage}`);
+        if (currentObjects.length > 0) {
+          console.log(`Object types: ${currentObjects.map(obj => obj.type).join(', ')}`);
+        }
+        
+        try {
+          // Directly create an updated page object for the current canvas
+          if (currentObjects.length > 0) {
+            // Create a JSON representation of the canvas
+            const canvasData = canvas.toJSON([
+              'id', 'linkedObjectIds', 'fromMaster', 'masterId', 'masterObjectId', 'overridable'
+            ]);
+            
+            console.log(`Saving ${currentObjects.length} objects to page ${previousPage}`);
+            const canvasJSON = JSON.stringify(canvasData);
+            
+            // Update the document with this specific page's data
+            currentDocument.update(doc => {
+              const updatedPages = [...doc.pages];
+              updatedPages[pageToSaveIndex] = {
+                ...updatedPages[pageToSaveIndex],
+                canvasJSON: canvasJSON
+              };
+              
+              return {
+                ...doc,
+                pages: updatedPages,
+                lastModified: new Date()
+              };
+            });
+            
+            console.log(`Directly saved page ${previousPage} with ${currentObjects.length} objects`);
+          } else {
+            console.log(`No objects to save for page ${previousPage}`);
+            
+            // Save empty page
+            const emptyCanvasJSON = JSON.stringify({
+              "version": "4.6.0",
+              "objects": [],
+              "background": "white"
+            });
+            
+            // Update empty page in document
+            currentDocument.update(doc => {
+              const updatedPages = [...doc.pages];
+              updatedPages[pageToSaveIndex] = {
+                ...updatedPages[pageToSaveIndex],
+                canvasJSON: emptyCanvasJSON
+              };
+              
+              return {
+                ...doc,
+                pages: updatedPages,
+                lastModified: new Date()
+              };
+            });
+            
+            console.log(`Saved empty state for page ${previousPage}`);
+          }
+        } catch (err) {
+          console.error(`Error saving page ${previousPage}:`, err);
+        }
+      } else {
+        console.error(`Could not find page ${previousPage} in document to save`);
       }
-      
-      saveCurrentPage();
       
       // Add a forced save to document store to ensure persistence
       console.log("Forcing document save to ensure data persistence");
@@ -72,10 +134,15 @@
       const oldPage = previousPage;
       previousPage = $currentPage;
       
-      // Load the new page (without calling saveCurrentPage again)
+      // Clear the canvas before loading the new page
+      canvas.clear();
+      canvas.backgroundColor = 'white';
+      canvas.renderAll();
+      
+      // Now load the new page (without calling saveCurrentPage again)
       console.log(`Loading new page: ${$currentPage} (after saving ${oldPage})`);
       loadPage($currentPage, false); // Pass false to avoid saving again
-    }, 50);
+    }, 100);
   }
   
   // Handle active tool changes
@@ -257,7 +324,58 @@
     // Save current page first (only if requested and we have a current page)
     if (shouldSaveFirst && $currentPage) {
       console.log(`Saving current page ${$currentPage} before loading ${pageId}`);
-      saveCurrentPage();
+      
+      // Use our manual save method to ensure correct page is updated
+      const pageToSaveIndex = $currentDocument.pages.findIndex(p => p.id === $currentPage);
+      if (pageToSaveIndex >= 0) {
+        const currentObjects = canvas.getObjects();
+        if (currentObjects.length > 0) {
+          // Create a JSON representation of the canvas
+          const canvasData = canvas.toJSON([
+            'id', 'linkedObjectIds', 'fromMaster', 'masterId', 'masterObjectId', 'overridable'
+          ]);
+          
+          console.log(`Saving ${currentObjects.length} objects to page ${$currentPage}`);
+          const canvasJSON = JSON.stringify(canvasData);
+          
+          // Update the document with this specific page's data
+          currentDocument.update(doc => {
+            const updatedPages = [...doc.pages];
+            updatedPages[pageToSaveIndex] = {
+              ...updatedPages[pageToSaveIndex],
+              canvasJSON: canvasJSON
+            };
+            
+            return {
+              ...doc,
+              pages: updatedPages,
+              lastModified: new Date()
+            };
+          });
+        } else {
+          // Save empty page
+          const emptyCanvasJSON = JSON.stringify({
+            "version": "4.6.0",
+            "objects": [],
+            "background": "white"
+          });
+          
+          // Update the document
+          currentDocument.update(doc => {
+            const updatedPages = [...doc.pages];
+            updatedPages[pageToSaveIndex] = {
+              ...updatedPages[pageToSaveIndex],
+              canvasJSON: emptyCanvasJSON
+            };
+            
+            return {
+              ...doc,
+              pages: updatedPages,
+              lastModified: new Date()
+            };
+          });
+        }
+      }
     }
     
     // Force canvas to clear and reset
@@ -271,9 +389,12 @@
     console.log(`Page to load:`, pageId, pageToLoad ? 'found' : 'not found');
     
     if (pageToLoad) {
-      // Clear canvas
+      // Clear canvas again to be sure
       canvas.clear();
       canvas.backgroundColor = 'white';
+      
+      // Force another render to ensure canvas is totally clean
+      canvas.renderAll();
       
       // Log detailed info about the page we're about to load
       console.log("Loading page data:", {
@@ -580,14 +701,30 @@
       return;
     }
     
-    const pageIndex = $currentDocument.pages.findIndex(p => p.id === $currentPage);
-    if (pageIndex < 0) {
+    // Get the index of the page to save
+    let pageIndexToSave = $currentDocument.pages.findIndex(p => p.id === $currentPage);
+    if (pageIndexToSave < 0) {
       console.warn(`Cannot save page: Page ${$currentPage} not found in document`);
       return;
     }
     
     try {
-      console.log(`Saving page ${$currentPage} (index ${pageIndex})`);
+      console.log(`Saving page ${$currentPage} (index ${pageIndexToSave})`);
+      
+      // Double-check the page ID
+      if ($currentDocument.pages[pageIndexToSave].id !== $currentPage) {
+        console.error(`CRITICAL ERROR: Page ID mismatch! Expected ${$currentPage} but found ${$currentDocument.pages[pageIndexToSave].id}`);
+        
+        // Try to find the correct page again
+        const doubleCheckIndex = $currentDocument.pages.findIndex(p => p.id === $currentPage);
+        if (doubleCheckIndex >= 0) {
+          console.log(`Corrected page index from ${pageIndexToSave} to ${doubleCheckIndex}`);
+          pageIndexToSave = doubleCheckIndex;
+        } else {
+          console.error(`Cannot find page ${$currentPage} in document, aborting save!`);
+          return;
+        }
+      }
       
       // CRITICAL: Capture canvas objects BEFORE any other operations
       const initialCanvasObjects = [...canvas.getObjects()];
@@ -608,11 +745,11 @@
         
         // Update document with empty canvas
         const updatedPages = [...$currentDocument.pages];
-        updatedPages[pageIndex] = {
-          ...updatedPages[pageIndex],
+        updatedPages[pageIndexToSave] = {
+          ...updatedPages[pageIndexToSave],
           canvasJSON: emptyCanvasJSON,
-          masterPageId: updatedPages[pageIndex].masterPageId,
-          overrides: updatedPages[pageIndex].overrides || {}
+          masterPageId: updatedPages[pageIndexToSave].masterPageId,
+          overrides: updatedPages[pageIndexToSave].overrides || {}
         };
         
         // Update the store
@@ -667,10 +804,10 @@
       // Create updated page object
       const updatedPages = [...$currentDocument.pages];
       const updatedPage = {
-        ...updatedPages[pageIndex],
+        ...updatedPages[pageIndexToSave],
         canvasJSON: canvasJSON,
-        masterPageId: updatedPages[pageIndex].masterPageId,
-        overrides: updatedPages[pageIndex].overrides || {}
+        masterPageId: updatedPages[pageIndexToSave].masterPageId,
+        overrides: updatedPages[pageIndexToSave].overrides || {}
       };
       
       // Final verification before saving
@@ -695,7 +832,7 @@
       console.log(`JSON objects: ${JSON.parse(updatedPage.canvasJSON).objects.length}`);
       
       // Update page in the array
-      updatedPages[pageIndex] = updatedPage;
+      updatedPages[pageIndexToSave] = updatedPage;
       
       console.log(`Updating document with saved page ${$currentPage}`);
       
