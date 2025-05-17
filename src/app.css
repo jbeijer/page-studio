@@ -58,7 +58,7 @@
   }
   
   .tools-panel {
-    @apply w-16 bg-gray-100 border-r border-gray-200 h-full flex flex-col items-center py-2 gap-2;
+    @apply w-40 bg-gray-100 border-r border-gray-200 h-full flex flex-col items-center py-2 gap-2;
   }
   
   .properties-panel {

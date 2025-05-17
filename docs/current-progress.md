@@ -86,9 +86,9 @@ Detta dokument ger en överblick över det aktuella tillståndet i PageStudio-pr
 - [x] Sidladdning och -sparning - **100% klart**
 
 ### Funktioner för UI/UX
-- [ ] Skapa funktionalitet för objektlager (framåt/bakåt) - **~10% klart**
-- [ ] Implementera kopiera/klistra in-funktionalitet
-- [ ] Skapa ångra/gör om-funktion
+- [x] Skapa funktionalitet för objektlager (framåt/bakåt) - **100% klart**
+- [x] Implementera kopiera/klistra in-funktionalitet - **100% klart**
+- [x] Skapa ångra/gör om-funktion - **100% klart**
 
 ## Nästa steg (Kommande 2 veckor)
 
@@ -97,10 +97,10 @@ Detta dokument ger en överblick över det aktuella tillståndet i PageStudio-pr
    - ~~Implementera dokument-sparning och -laddning~~ ✓
    - ~~Skapa dokumentväljare för tidigare arbeten~~ ✓
 
-2. **Användargränssnittsförbättringar**
-   - Skapa funktionalitet för objektlager (framåt/bakåt)
-   - Implementera kopiera/klistra in-funktionalitet
-   - Skapa ångra/gör om-funktion
+2. **~~Användargränssnittsförbättringar~~ (SLUTFÖRT)**
+   - ~~Skapa funktionalitet för objektlager (framåt/bakåt)~~ ✓
+   - ~~Implementera kopiera/klistra in-funktionalitet~~ ✓
+   - ~~Skapa ångra/gör om-funktion~~ ✓
 
 3. **Rutnät & Hjälplinjer**
    - Implementera konfigurerbart rutnät

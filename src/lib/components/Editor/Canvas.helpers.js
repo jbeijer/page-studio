@@ -15,17 +15,21 @@ export function createLayerManagementFunctions(canvas, saveFunction) {
     if (!canvas) return;
     
     const activeObject = canvas.getActiveObject();
-    if (!activeObject || activeObject.fromMaster) return;
+    if (!activeObject) return;
     
+    // Log for debugging 
+    console.log("Bringing forward object:", activeObject);
+    console.log("Object type:", activeObject.type);
+    
+    // Remove fromMaster check to allow all objects to be moved
     if (activeObject.type === 'activeSelection') {
       // Handle group selection - sort objects by their z-index first to avoid conflicts
       const objects = activeObject.getObjects();
       objects.sort((a, b) => canvas.getObjects().indexOf(b) - canvas.getObjects().indexOf(a));
       
       objects.forEach(obj => {
-        if (!obj.fromMaster) {
-          canvas.bringForward(obj);
-        }
+        console.log("Moving group object:", obj);
+        canvas.bringForward(obj);
       });
     } else {
       canvas.bringForward(activeObject);
@@ -42,7 +46,10 @@ export function createLayerManagementFunctions(canvas, saveFunction) {
     if (!canvas) return;
     
     const activeObject = canvas.getActiveObject();
-    if (!activeObject || activeObject.fromMaster) return;
+    if (!activeObject) return;
+    
+    // Log for debugging
+    console.log("Sending backward object:", activeObject);
     
     if (activeObject.type === 'activeSelection') {
       // Handle group selection - sort objects by their z-index first to avoid conflicts
@@ -50,9 +57,8 @@ export function createLayerManagementFunctions(canvas, saveFunction) {
       objects.sort((a, b) => canvas.getObjects().indexOf(a) - canvas.getObjects().indexOf(b));
       
       objects.forEach(obj => {
-        if (!obj.fromMaster) {
-          canvas.sendBackward(obj);
-        }
+        console.log("Moving group object backward:", obj);
+        canvas.sendBackward(obj);
       });
     } else {
       canvas.sendBackward(activeObject);
@@ -69,7 +75,10 @@ export function createLayerManagementFunctions(canvas, saveFunction) {
     if (!canvas) return;
     
     const activeObject = canvas.getActiveObject();
-    if (!activeObject || activeObject.fromMaster) return;
+    if (!activeObject) return;
+    
+    // Log for debugging
+    console.log("Bringing to front object:", activeObject);
     
     if (activeObject.type === 'activeSelection') {
       // Handle group selection - sort objects by their z-index first to avoid conflicts
@@ -77,9 +86,8 @@ export function createLayerManagementFunctions(canvas, saveFunction) {
       objects.sort((a, b) => canvas.getObjects().indexOf(b) - canvas.getObjects().indexOf(a));
       
       objects.forEach(obj => {
-        if (!obj.fromMaster) {
-          canvas.bringToFront(obj);
-        }
+        console.log("Moving group object to front:", obj);
+        canvas.bringToFront(obj);
       });
     } else {
       canvas.bringToFront(activeObject);
@@ -96,7 +104,10 @@ export function createLayerManagementFunctions(canvas, saveFunction) {
     if (!canvas) return;
     
     const activeObject = canvas.getActiveObject();
-    if (!activeObject || activeObject.fromMaster) return;
+    if (!activeObject) return;
+    
+    // Log for debugging
+    console.log("Sending to back object:", activeObject);
     
     if (activeObject.type === 'activeSelection') {
       // Handle group selection - sort objects by their z-index first to avoid conflicts
@@ -104,9 +115,8 @@ export function createLayerManagementFunctions(canvas, saveFunction) {
       objects.sort((a, b) => canvas.getObjects().indexOf(a) - canvas.getObjects().indexOf(b));
       
       objects.forEach(obj => {
-        if (!obj.fromMaster) {
-          canvas.sendToBack(obj);
-        }
+        console.log("Moving group object to back:", obj);
+        canvas.sendToBack(obj);
       });
     } else {
       canvas.sendToBack(activeObject);

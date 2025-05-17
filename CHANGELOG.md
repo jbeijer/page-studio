@@ -7,6 +7,62 @@ och projektet följer [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Fixed
+- Temporary downgrade from Svelte 5 to Svelte 4 for compatibility
+- Fixed fabric.js initialization syntax for version 5.3.0
+- Fixed accessibility issues in form controls
+- Replaced TailwindCSS @apply directives with standard CSS in components
+- Fixed test suite to support the modular refactored codebase
+- Created fabric-helpers.js module to handle fabric.js version differences
+- Implemented proper fabric.js mocks in tests
+- Fixed issues with fabric.js Textbox, IText and Text object creation
+- Updated component tests to be compatible with refactored component structure
+
+### Changed
+- Fullständig refaktorering av Canvas.svelte (2916 rader) till mindre, modulära komponenter:
+  - Skapat ett komponentbibliotek i `/modules` för Canvas-funktionalitet
+  - Implementerat ett delat kontext-mönster för kommunikation mellan moduler
+  - Extraherat event-hantering till Canvas.events.js
+  - Extraherat lagerhantering till Canvas.layers.js
+  - Extraherat objektmanipulation till Canvas.objects.js
+  - Extraherat dokumenthantering till Canvas.document.js
+  - Extraherat guidehantering till Canvas.guides.js
+  - Extraherat grid-rendering till Canvas.grid.js
+  - Uppdaterat test-suite för att fungera med den nya strukturen
+  - Dramatiskt förbättrad underhållbarhet genom uppdelning av gigantiska filer
+  - Löst buggar relaterade till dataöverföring mellan moduler
+
+- Fullständig refaktorering av Toolbar.svelte (645 rader) till modulära komponenter:
+  - Skapat `toolbar`-mapp med separata komponenter för olika verktygsfunktioner
+  - Implementerat `DrawingTools.svelte` för ritverktyg
+  - Implementerat `LayerTools.svelte` för lagerhantering
+  - Implementerat `EditTools.svelte` för redigerings- och historikfunktioner
+  - Implementerat `ViewTools.svelte` för visningsinställningar
+  - Implementerat `ToolConfigPanel.svelte` för verktygsspecifika inställningar
+  - Skapat `toolbar.utils.js` för återanvändbara hjälpfunktioner
+  - Skapat `toolbar.index.js` för enhetlig import av alla toolbar-komponenter
+
+- Fullständig refaktorering av storage.js (615 rader) till modulära komponenter:
+  - Skapat `storage`-mapp med separata moduler för olika datahanteringsfunktioner
+  - Implementerat `database.js` för grundläggande IndexedDB-operationer
+  - Implementerat `validation.js` för datavalidering och formatkontroll
+  - Implementerat `documents.js` för dokumentrelaterade CRUD-operationer
+  - Implementerat `master-pages.js` för hantering av mallsidor
+  - Implementerat `templates.js` för hantering av dokumentmallar
+  - Skapat `index.js` för enhetlig export av alla lagringsfunktioner
+  - Förbättrad felhantering och datavalidering över hela API:et
+
+- Fullständig refaktorering av +page.svelte (Editor Page) till modulära komponenter:
+  - Skapat `editor`-mapp med separata komponenter för olika editor-funktioner
+  - Implementerat `EditorHeader.svelte` för appens toppnavigering
+  - Implementerat `PageNavigator.svelte` för sidnavigering och sidhantering
+  - Implementerat `PropertiesPanel.svelte` för objektegenskaper
+  - Implementerat `DocumentManager.js` för dokumenthantering
+  - Implementerat `AutoSaveManager.js` för automatisk sparning
+  - Omstrukturerad koden för tydligare ansvarsfördelning och förbättrad underhållbarhet
+  - Förbättrad kontexthantering mellan komponenter
+  - Reducerad kodduplikation i lagrings- och sidhanteringsfunktioner
+
 ### Added
 - Initial projektstruktur med SvelteKit, Fabric.js och TailwindCSS
 - Grundläggande canvas-editor med Fabric.js
@@ -39,6 +95,10 @@ och projektet följer [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Utvecklat rulers (horisontell och vertikal) för precisa mätningar
 - Implementerat funktionalitet för dragbara hjälplinjer
 - Implementerat snappning till rutnät för exakt objektplacering
+- Objekt-lagerhantering (bringForward/sendBackward/bringToFront/sendToBack)
+- Kopiera/klippa ut/klistra in-funktionalitet för objekt
+- Stöd för gruppselektioner vid lagerhantering
+- Skydd mot att manipulera mallsideobjekt vid lagerändring
 
 ### Changed
 - Flyttade all projektdokumentation till `/docs`-mappen
@@ -64,6 +124,8 @@ och projektet följer [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Löst issues med subpixel-rendering i grid-komponenten
 - Fixat rendering av guides genom förbättrad positionering
 - Korrigerat JSDoc-syntax i Canvas.svelte för korrekt kompilering
+- Förbättrad felhantering i Canvas-moduler med mer robusta kontroller och fallback-mekanismer
+- Förbättrat lagerhanteringen för att korrekt hantera grupp-selektioner
 
 ## [0.1.0] - 2025-05-17
 ### Added

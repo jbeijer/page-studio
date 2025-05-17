@@ -117,14 +117,33 @@
   }
   
   .btn {
-    @apply font-medium py-2 px-4 rounded focus:outline-none focus:ring-2 focus:ring-opacity-50 transition-colors;
+    font-weight: 500;
+    padding: 0.5rem 1rem;
+    border-radius: 0.25rem;
+    outline: none;
+    transition: background-color 0.2s;
+  }
+  
+  .btn:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5);
   }
   
   .btn-primary {
-    @apply bg-blue-600 hover:bg-blue-700 text-white focus:ring-blue-500;
+    background-color: #2563eb;
+    color: white;
+  }
+  
+  .btn-primary:hover {
+    background-color: #1d4ed8;
   }
   
   .btn-secondary {
-    @apply bg-gray-200 hover:bg-gray-300 text-gray-800 focus:ring-gray-500;
+    background-color: #e5e7eb;
+    color: #1f2937;
+  }
+  
+  .btn-secondary:hover {
+    background-color: #d1d5db;
   }
 </style>

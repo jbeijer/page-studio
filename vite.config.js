@@ -24,7 +24,8 @@ export default defineConfig({
   
   // Svelte specific options
   optimizeDeps: {
-    include: ['fabric']
+    include: ['fabric'],
+    exclude: ['@sveltejs/kit']
   },
   
   // Test configuration

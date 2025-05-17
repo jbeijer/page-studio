@@ -3,13 +3,13 @@
   import { currentDocument, currentPage } from '$lib/stores/document';
   import { activeTool, ToolType, currentToolOptions } from '$lib/stores/toolbar';
   import { clipboard } from '$lib/stores/editor';
-  import { fabric } from 'fabric';
+  import * as fabric from 'fabric';
   import TextFlow from '$lib/utils/text-flow';
   import HistoryManager from '$lib/utils/history-manager';
-  import { createCanvas, detectFabricVersion } from '$lib/utils/fabric-helpers';
   import MasterObjectContextMenu from './MasterObjectContextMenu.svelte';
   import HorizontalRuler from './HorizontalRuler.svelte';
   import VerticalRuler from './VerticalRuler.svelte';
+  import { renderGrid } from './Canvas.grid.js';
   import { 
     createHorizontalGuide, 
     createVerticalGuide, 
@@ -25,9 +25,7 @@
     createEventHandlers,
     createLayerManagement,
     createObjectManipulation,
-    createDocumentManagement,
-    createGuideManagement,
-    createGridManagement
+    createDocumentManagement
   } from './modules/Canvas.index.js';
 
   // Import grid-utils only on client-side
@@ -43,7 +41,6 @@
   
   const dispatch = createEventDispatcher();
   
-  // Props using the standard Svelte 4 syntax
   export let width = 1240; // Default A4 @ 150 DPI: 210mm × 1.5 × 3.93701
   export let height = 1754; // Default A4 @ 150 DPI: 297mm × 1.5 × 3.93701
   
@@ -62,8 +59,6 @@
   let layerManagement;
   let objectManipulation;
   let documentManagement;
-  let guideManagement;
-  let gridManagement;
   
   // State variables
   let isMounted = false;
@@ -98,9 +93,16 @@
   $: rulerOffset = 20; // Width/height of the rulers
   
   // Watch for grid changes
-  $: if (canvas && $currentDocument?.metadata?.grid && gridManagement) {
-    // Use our grid module's renderGrid function
-    gridManagement.renderGrid();
+  $: if (canvas && $currentDocument?.metadata?.grid) {
+    renderGrid({
+      canvas,
+      canvasElement,
+      isMounted,
+      width,
+      height,
+      currentDocument: $currentDocument,
+      convertToPixels
+    });
   }
   
   // Generate a unique ID for objects when needed
@@ -241,6 +243,7 @@
       updateTextFlow,
       setupCanvasForTool,
       loadDocument,
+      renderGrid,
       
       // Guide functions
       refreshGuides: loadGuides.bind(null, canvas, $currentDocument, $currentPage)
@@ -251,16 +254,9 @@
     layerManagement = createLayerManagement(context);
     objectManipulation = createObjectManipulation(context);
     documentManagement = createDocumentManagement(context);
-    guideManagement = createGuideManagement(context);
-    gridManagement = createGridManagement(context);
     
     // Update context with module functions
     context.update({
-      // Grid management functions
-      renderGrid: gridManagement.renderGrid,
-      toggleGrid: gridManagement.toggleGrid,
-      updateGridProperties: gridManagement.updateGridProperties,
-      
       // Event handlers
       handleMouseDown: eventHandlers.handleMouseDown,
       handleMouseMove: eventHandlers.handleMouseMove,
@@ -294,20 +290,7 @@
       loadDocumentFromIndexedDB: documentManagement.loadDocumentFromIndexedDB,
       createObjectsManually: documentManagement.createObjectsManually,
       applyMasterPage: documentManagement.applyMasterPage,
-      overrideMasterObject: documentManagement.overrideMasterObject,
-      
-      // Guide management
-      handleCreateGuide: guideManagement.handleCreateGuide,
-      handleUpdateGuide: guideManagement.handleUpdateGuide,
-      handleDeleteGuide: guideManagement.handleDeleteGuide,
-      saveGuidesToDocument: guideManagement.saveGuidesToDocument,
-      loadGuidesFromDocument: guideManagement.loadGuidesFromDocument,
-      clearGuides: guideManagement.clearGuides,
-      
-      // Grid management
-      renderGrid: gridManagement.renderGrid,
-      toggleGrid: gridManagement.toggleGrid,
-      updateGridProperties: gridManagement.updateGridProperties
+      overrideMasterObject: documentManagement.overrideMasterObject
     });
     
     return context;
@@ -527,65 +510,126 @@
     }, 500);
   }
 
-  // Guide-related event handlers have been moved to Canvas.guides.js
-  // These wrapper functions use the module functions from the shared context
+  /**
+   * Handler for creating guides
+   */
   function handleCreateGuide(event) {
-    guideManagement.handleCreateGuide(event.detail);
+    const { position, orientation } = event.detail;
+    
+    if (orientation === 'horizontal') {
+      createHorizontalGuide(canvas, position);
+    } else {
+      createVerticalGuide(canvas, position);
+    }
+    
+    // Update the document to save the guide
+    if (canvas && $currentDocument && $currentPage) {
+      const guides = { 
+        horizontal: [], 
+        vertical: [] 
+      };
+      
+      // Collect all guides from canvas
+      canvas.getObjects().forEach(obj => {
+        if (obj.guide) {
+          if (obj.orientation === 'horizontal') {
+            guides.horizontal.push(obj.top);
+          } else {
+            guides.vertical.push(obj.left);
+          }
+        }
+      });
+      
+      // Update document
+      const pageIndex = $currentDocument.pages.findIndex(p => p.id === $currentPage);
+      if (pageIndex >= 0) {
+        const updatedPages = [...$currentDocument.pages];
+        updatedPages[pageIndex] = {
+          ...updatedPages[pageIndex],
+          guides
+        };
+        
+        currentDocument.update(doc => ({
+          ...doc,
+          pages: updatedPages
+        }));
+      }
+    }
   }
   
+  /**
+   * Handler for updating guides
+   */
   function handleUpdateGuide(event) {
-    guideManagement.handleUpdateGuide(event.detail);
+    // Similar implementation to handleCreateGuide, but updates an existing guide
+    handleCreateGuide(event);
   }
   
+  /**
+   * Handler for deleting guides
+   */
   function handleDeleteGuide(event) {
-    guideManagement.handleDeleteGuide(event.detail);
+    const { id } = event.detail;
+    
+    if (id && canvas) {
+      const guideObj = canvas.getObjects().find(obj => obj.id === id && obj.guide);
+      if (guideObj) {
+        deleteGuide(canvas, guideObj);
+        
+        // Update the document to save the guide state
+        if ($currentDocument && $currentPage) {
+          const guides = { 
+            horizontal: [], 
+            vertical: [] 
+          };
+          
+          // Collect remaining guides from canvas
+          canvas.getObjects().forEach(obj => {
+            if (obj.guide) {
+              if (obj.orientation === 'horizontal') {
+                guides.horizontal.push(obj.top);
+              } else {
+                guides.vertical.push(obj.left);
+              }
+            }
+          });
+          
+          // Update document
+          const pageIndex = $currentDocument.pages.findIndex(p => p.id === $currentPage);
+          if (pageIndex >= 0) {
+            const updatedPages = [...$currentDocument.pages];
+            updatedPages[pageIndex] = {
+              ...updatedPages[pageIndex],
+              guides
+            };
+            
+            currentDocument.update(doc => ({
+              ...doc,
+              pages: updatedPages
+            }));
+          }
+        }
+      }
+    }
   }
   
+  /**
+   * Refresh guides for the current page
+   */
   function refreshGuides() {
-    guideManagement.loadGuidesFromDocument();
+    loadGuides(canvas, $currentDocument, $currentPage);
   }
 
   onMount(() => {
     isMounted = true;
-    
-    // Log fabric.js version info
-    console.log("Fabric version detected:", detectFabricVersion());
-    console.log("Available fabric classes:", {
-      Canvas: !!fabric.Canvas,
-      StaticCanvas: !!fabric.StaticCanvas,
-      Textbox: !!fabric.Textbox,
-      IText: !!fabric.IText,
-      Text: !!fabric.Text
+    // Initialize Fabric.js canvas with the given dimensions
+    canvas = new fabric.Canvas(canvasElement, {
+      width,
+      height,
+      selection: true,
+      preserveObjectStacking: true,
+      backgroundColor: 'white'
     });
-    
-    // Initialize Fabric.js canvas with the given dimensions using our helper
-    try {
-      canvas = createCanvas(canvasElement, {
-        width,
-        height,
-        selection: true,
-        preserveObjectStacking: true,
-        backgroundColor: 'white'
-      });
-      
-      if (!canvas) {
-        throw new Error("Failed to create canvas");
-      }
-    } catch (error) {
-      console.error("Canvas initialization failed:", error);
-      
-      // Last resort fallback - try direct initialization with different approach
-      try {
-        canvas = new fabric.Canvas(canvasElement);
-        canvas.setWidth(width);
-        canvas.setHeight(height);
-        canvas.selection = true;
-        canvas.preserveObjectStacking = true;
-        canvas.backgroundColor = 'white';
-      } catch (fallbackError) {
-        console.error("Canvas fallback initialization also failed:", fallbackError);
-      }
-    }
     
     // Load document from store if it exists
     if ($currentDocument) {
@@ -637,25 +681,20 @@
     setupCanvasForTool($activeTool);
     
     // Initialize grid if enabled
-    if ($currentDocument?.metadata?.grid?.enabled && gridManagement) {
-      gridManagement.renderGrid();
+    if ($currentDocument?.metadata?.grid?.enabled) {
+      renderGrid({
+        canvas,
+        canvasElement,
+        isMounted,
+        width,
+        height,
+        currentDocument: $currentDocument,
+        convertToPixels
+      });
     }
     
     // Initialize guides for current page
     refreshGuides();
-    
-    // Create a derived store to update context when store values change
-    $: {
-      if (context && context.update && $currentDocument && $currentPage) {
-        console.log("Canvas.svelte: Updating context with new document/page data");
-        context.update({
-          currentDocument: $currentDocument,
-          currentPage: $currentPage,
-          activeTool: $activeTool,
-          currentToolOptions: $currentToolOptions
-        });
-      }
-    }
     
     return () => {
       // Clean up canvas on component unmount
