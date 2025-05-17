@@ -71,11 +71,64 @@ export function createDocumentManagement(context) {
       }
     }
     
-    // Get the index of the page to save
-    let pageIndexToSave = doc.pages.findIndex(p => p.id === pageId);
-    if (pageIndexToSave < 0) {
-      console.warn(`Cannot save page: Page ${pageId} not found in document`);
-      return false;
+    // Declare pageIndexToSave variable at the top level
+    let pageIndexToSave = -1;
+    
+    // Defensive check for missing pages array
+    if (!doc.pages || !Array.isArray(doc.pages)) {
+      console.warn(`Cannot save page: Document has invalid pages structure`, doc);
+      
+      // Try to initialize pages array if missing
+      if (doc && !doc.pages) {
+        doc.pages = [{
+          id: pageId,
+          canvasJSON: JSON.stringify({
+            "version": "4.6.0",
+            "objects": [],
+            "background": "white"
+          }),
+          masterPageId: null,
+          overrides: {}
+        }];
+        
+        // Store reference for recovery
+        window.$document = doc;
+        
+        console.log("Created empty pages array in document");
+        pageIndexToSave = 0; // Set to first page
+      } else {
+        return false;
+      }
+    } else {
+      // Get the index of the page to save
+      pageIndexToSave = doc.pages.findIndex(p => p.id === pageId);
+      if (pageIndexToSave < 0) {
+        console.warn(`Cannot save page: Page ${pageId} not found in document`);
+        
+        // Try to create the page if it's missing
+        try {
+          const newPage = {
+            id: pageId,
+            canvasJSON: JSON.stringify({
+              "version": "4.6.0",
+              "objects": [],
+              "background": "white"
+            }),
+            masterPageId: null,
+            overrides: {}
+          };
+          
+          doc.pages.push(newPage);
+          pageIndexToSave = doc.pages.length - 1;
+          console.log(`Created missing page ${pageId} at index ${pageIndexToSave}`);
+          
+          // Store updated reference
+          window.$document = doc;
+        } catch (err) {
+          console.error("Error creating missing page:", err);
+          return false;
+        }
+      }
     }
     
     try {
@@ -206,19 +259,27 @@ export function createDocumentManagement(context) {
       
       console.log(`Updating document with saved page ${pageId}`);
       
-      // Update the store with the new pages
-      if (context.currentDocument && context.currentDocument.update) {
+      // Try multiple update mechanisms in order of preference
+      const updatedDoc = {
+        ...doc,
+        pages: updatedPages,
+        lastModified: new Date()
+      };
+        
+      // Attempt to update the document store using available methods
+      if (context.currentDocument && typeof context.currentDocument.update === 'function') {
+        // Standard Svelte store update method
         context.currentDocument.update(docToUpdate => {
-          const updatedDoc = {
+          const result = {
             ...docToUpdate,
             pages: updatedPages,
             lastModified: new Date()
           };
           
           // Verify the update worked
-          const verifyPageIndex = updatedDoc.pages.findIndex(p => p.id === pageId);
+          const verifyPageIndex = result.pages.findIndex(p => p.id === pageId);
           if (verifyPageIndex >= 0) {
-            const verifyPage = updatedDoc.pages[verifyPageIndex];
+            const verifyPage = result.pages[verifyPageIndex];
             console.log(`Verification: Page ${verifyPage.id} has canvasJSON of length ${verifyPage.canvasJSON ? verifyPage.canvasJSON.length : 0}`);
             
             try {
@@ -229,10 +290,42 @@ export function createDocumentManagement(context) {
             }
           }
           
-          return updatedDoc;
+          return result;
         });
+      } else if (window.$updateDocument && typeof window.$updateDocument === 'function') {
+        // Fall back to stored update function
+        window.$updateDocument(docToUpdate => ({
+          ...docToUpdate,
+          pages: updatedPages,
+          lastModified: new Date()
+        }));
+        console.log("Document updated using window.$updateDocument fallback");
       } else {
-        console.error("Cannot update document: context.currentDocument.update is not available");
+        // Direct update of window reference as last resort
+        window.$document = updatedDoc;
+        console.log("Document updated directly via window.$document fallback");
+        
+        // Attempt to sync with the documents store from global context
+        if (window.$globalContext && window.$globalContext.documents && 
+            typeof window.$globalContext.documents.update === 'function') {
+          window.$globalContext.documents.update(docs => {
+            const updatedDocs = {...docs};
+            updatedDocs[updatedDoc.id] = updatedDoc;
+            return updatedDocs;
+          });
+          console.log("Document also updated in global documents store");
+        }
+        
+        // Save to IndexedDB directly if possible
+        try {
+          if (window.saveDocument) {
+            window.saveDocument(updatedDoc).then(() => {
+              console.log("Document saved directly to IndexedDB as fallback");
+            });
+          }
+        } catch (saveErr) {
+          console.log("Could not save directly to IndexedDB:", saveErr);
+        }
       }
       
       console.log(`Page ${pageId} saved successfully with ${objectCount} objects`);
@@ -369,28 +462,57 @@ export function createDocumentManagement(context) {
         overrides: updatedPages[pageIndexToSave].overrides || {}
       };
       
-      // Update the store - handle possibly missing update function
+      // Create updated document
+      const updatedDoc = {
+        ...doc,
+        pages: updatedPages,
+        lastModified: new Date()
+      };
+      
+      // Try multiple update mechanisms in order of preference
       if (context.currentDocument && typeof context.currentDocument.update === 'function') {
+        // Standard Svelte store update method
         context.currentDocument.update(docToUpdate => ({
           ...docToUpdate,
           pages: updatedPages,
           lastModified: new Date()
         }));
-      } else if (window.$updateDocument) {
-        // Use alternative update mechanism if available
-        window.$updateDocument(doc => ({
-          ...doc,
+        console.log(`Updated document store for page ${pageId} with ${objects.length} objects`);
+      } else if (window.$updateDocument && typeof window.$updateDocument === 'function') {
+        // Fall back to stored update function
+        window.$updateDocument(docToUpdate => ({
+          ...docToUpdate,
           pages: updatedPages,
           lastModified: new Date()
         }));
+        console.log("Document updated using window.$updateDocument fallback");
       } else {
-        // Direct update fallback - if update function isn't available, store reference
-        window.$document = {
-          ...doc,
-          pages: updatedPages,
-          lastModified: new Date()
-        };
+        // Direct update of window reference as last resort
+        window.$document = updatedDoc;
+        console.log("Document updated directly via window.$document fallback");
+        
+        // Attempt to use storage module directly
+        try {
+          // Import storage module only if needed
+          if (window.require) {
+            const storage = window.require('$lib/utils/storage');
+            if (storage && storage.saveDocument) {
+              storage.saveDocument(updatedDoc).then(() => {
+                console.log("Document saved directly to IndexedDB via storage module");
+              });
+            }
+          } else if (window.saveDocument) {
+            window.saveDocument(updatedDoc).then(() => {
+              console.log("Document saved directly to IndexedDB as fallback");
+            });
+          }
+        } catch (saveErr) {
+          console.log("Could not save directly to IndexedDB:", saveErr);
+        }
       }
+      
+      // Always update the window reference for recovery
+      window.$document = updatedDoc;
       
       console.log(`Page ${pageId} saved successfully with ${objects.length} objects`);
       return true;

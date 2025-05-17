@@ -17,7 +17,7 @@
     deleteGuide,
     loadGuides
   } from './Canvas.guides.js';
-  import { loadDocument } from '$lib/utils/storage.js';
+  import { loadDocument, saveDocument } from '$lib/utils/storage.js';
   
   // Import modular components
   import { 
@@ -395,6 +395,8 @@
     window.$page = $currentPage;
     window.$document = $currentDocument;
     window.$updateDocument = currentDocument.update;
+    window.$globalContext = context;
+    window.saveDocument = saveDocument;
     
     console.log(`Canvas state before page switch:`, {
       hasCanvas: !!canvas,
@@ -562,6 +564,9 @@
 
   onMount(() => {
     isMounted = true;
+    
+    // Set up global recovery references early
+    window.saveDocument = saveDocument;
     
     // Log fabric.js version info
     console.log("Fabric version detected:", detectFabricVersion());
