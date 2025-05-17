@@ -66,42 +66,183 @@ export function openDatabase() {
  * @returns {Promise<string>} Document ID
  */
 export async function saveDocument(document) {
-  const db = await openDatabase();
+  console.log("Starting saveDocument for:", document.id);
   
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction([DOCUMENT_STORE], 'readwrite');
-    const store = transaction.objectStore(DOCUMENT_STORE);
-    
-    // Prepare the document for storage (convert Date objects to strings)
-    const storageDoc = {
-      ...document,
-      created: document.created.toISOString(),
-      lastModified: new Date().toISOString()
-    };
-    
-    // For master pages, convert created and lastModified dates to ISO strings
-    if (storageDoc.masterPages && Array.isArray(storageDoc.masterPages)) {
-      storageDoc.masterPages = storageDoc.masterPages.map(masterPage => ({
-        ...masterPage,
-        created: masterPage.created instanceof Date ? masterPage.created.toISOString() : masterPage.created,
-        lastModified: masterPage.lastModified instanceof Date ? masterPage.lastModified.toISOString() : masterPage.lastModified
-      }));
+  try {
+    if (!document || !document.id) {
+      throw new Error("Invalid document object: Missing ID");
     }
     
-    const request = store.put(storageDoc);
+    if (!document.pages || !Array.isArray(document.pages)) {
+      throw new Error("Invalid document object: Missing pages array");
+    }
     
-    request.onsuccess = () => {
-      resolve(document.id);
-    };
+    const db = await openDatabase();
+    console.log("Database opened successfully");
     
-    request.onerror = (event) => {
-      reject(`Error saving document: ${event.target.error}`);
-    };
-    
-    transaction.oncomplete = () => {
-      db.close();
-    };
-  });
+    return new Promise((resolve, reject) => {
+      try {
+        const transaction = db.transaction([DOCUMENT_STORE], 'readwrite');
+        console.log("Transaction created");
+        
+        const store = transaction.objectStore(DOCUMENT_STORE);
+        console.log("Store accessed");
+        
+        // Deep clone to avoid modifying the original document
+        const docClone = JSON.parse(JSON.stringify(document));
+        
+        // Prepare the document for storage (convert Date objects to strings)
+        const storageDoc = {
+          ...docClone,
+          created: document.created instanceof Date ? document.created.toISOString() : document.created,
+          lastModified: new Date().toISOString()
+        };
+        
+        // For master pages, convert created and lastModified dates to ISO strings
+        if (storageDoc.masterPages && Array.isArray(storageDoc.masterPages)) {
+          storageDoc.masterPages = storageDoc.masterPages.map(masterPage => ({
+            ...masterPage,
+            created: masterPage.created instanceof Date ? masterPage.created.toISOString() : masterPage.created,
+            lastModified: masterPage.lastModified instanceof Date ? masterPage.lastModified.toISOString() : masterPage.lastModified
+          }));
+        }
+        
+        // Verify each page has proper canvasJSON
+        storageDoc.pages = storageDoc.pages.map((page, index) => {
+          // If canvasJSON is undefined, set it to null
+          if (page.canvasJSON === undefined) {
+            console.warn(`Page ${index} (ID: ${page.id}) missing canvasJSON, setting to null`);
+            return { ...page, canvasJSON: null };
+          }
+          
+          // Special handling for string-type canvasJSON
+          if (typeof page.canvasJSON === 'string') {
+            console.log(`Page ${index} (ID: ${page.id}) has string canvasJSON of length ${page.canvasJSON.length}`);
+            
+            try {
+              // Try to parse it to make sure it's valid JSON
+              const parsedJSON = JSON.parse(page.canvasJSON);
+              const objectCount = parsedJSON.objects ? parsedJSON.objects.length : 0;
+              console.log(`  - Valid JSON with ${objectCount} objects`);
+              
+              // Log if it's suspiciously small
+              if (page.canvasJSON.length < 50) {
+                console.warn(`  - Warning: Very small JSON, might be empty canvas: ${page.canvasJSON}`);
+              }
+              
+              // It's valid JSON, return as is
+              return page;
+            } catch (err) {
+              console.error(`  - Error parsing canvasJSON for page ${page.id}:`, err);
+              console.error(`  - Invalid JSON data:`, page.canvasJSON.substring(0, 100) + '...');
+              
+              // Set to empty JSON object since it's invalid
+              return { ...page, canvasJSON: '{"objects":[],"background":"white"}' };
+            }
+          }
+          
+          // For object-type canvasJSON, convert to string
+          if (typeof page.canvasJSON === 'object' && page.canvasJSON !== null) {
+            try {
+              const jsonString = JSON.stringify(page.canvasJSON);
+              console.log(`Page ${index} (ID: ${page.id}) has object canvasJSON, converted to string of length ${jsonString.length}`);
+              return { ...page, canvasJSON: jsonString };
+            } catch (err) {
+              console.error(`Error stringifying canvasJSON for page ${page.id}:`, err);
+              return { ...page, canvasJSON: '{"objects":[],"background":"white"}' };
+            }
+          }
+          
+          return page;
+        });
+        
+        console.log("Putting document in store:", storageDoc.id);
+        
+        // Final check of pages data before storage
+        console.log(`About to store document with ${storageDoc.pages.length} pages:`);
+        storageDoc.pages.forEach((page, i) => {
+          if (page.canvasJSON) {
+            console.log(`DB Store: Page ${i} (${page.id}) canvasJSON length: ${page.canvasJSON.length}`);
+            
+            // Paranoid check for valid JSON
+            try {
+              const pageData = JSON.parse(page.canvasJSON);
+              console.log(`DB Store: Page ${i} objects: ${pageData.objects ? pageData.objects.length : 0}`);
+            } catch (err) {
+              console.error(`DB Store: Page ${i} has invalid JSON!`, err);
+            }
+          } else {
+            console.warn(`DB Store: Page ${i} (${page.id}) has no canvasJSON!`);
+          }
+        });
+        
+        // Do the actual storage
+        const request = store.put(storageDoc);
+        
+        request.onsuccess = () => {
+          console.log("Document saved successfully to IndexedDB:", document.id);
+          
+          // Verify the data is stored by reading it back
+          const verifyRequest = store.get(document.id);
+          
+          verifyRequest.onsuccess = (event) => {
+            if (event.target.result) {
+              const storedDoc = event.target.result;
+              console.log(`Verification from DB: Document ${storedDoc.id} with ${storedDoc.pages.length} pages`);
+              
+              // Check pages data
+              storedDoc.pages.forEach((page, i) => {
+                if (page.canvasJSON) {
+                  console.log(`DB Verify: Page ${i} (${page.id}) canvasJSON length: ${page.canvasJSON.length}`);
+                  
+                  // Check for valid JSON
+                  try {
+                    const pageData = JSON.parse(page.canvasJSON);
+                    console.log(`DB Verify: Page ${i} objects: ${pageData.objects ? pageData.objects.length : 0}`);
+                  } catch (err) {
+                    console.error(`DB Verify: Page ${i} has invalid JSON after storage!`, err);
+                  }
+                } else {
+                  console.warn(`DB Verify: Page ${i} (${page.id}) has no canvasJSON after storage!`);
+                }
+              });
+            } else {
+              console.error(`DB Verify: Document ${document.id} not found after saving!`);
+            }
+            
+            resolve(document.id);
+          };
+          
+          verifyRequest.onerror = (err) => {
+            console.error("DB Verify: Error verifying stored document:", err);
+            // Still resolve since the initial save succeeded
+            resolve(document.id);
+          };
+        };
+        
+        request.onerror = (event) => {
+          console.error("DB Error: Error in put request:", event.target.error);
+          reject(`Error saving document: ${event.target.error}`);
+        };
+        
+        transaction.oncomplete = () => {
+          console.log("DB Transaction: Transaction completed");
+          db.close();
+        };
+        
+        transaction.onerror = (event) => {
+          console.error("DB Transaction: Transaction error:", event.target.error);
+          reject(`Transaction error: ${event.target.error}`);
+        };
+      } catch (err) {
+        console.error("Error in transaction setup:", err);
+        reject(`Error setting up transaction: ${err.message}`);
+      }
+    });
+  } catch (err) {
+    console.error("Error in saveDocument:", err);
+    throw err;
+  }
 }
 
 /**
@@ -136,12 +277,50 @@ export async function loadDocument(documentId) {
           doc.masterPages = [];
         }
         
-        // Ensure all pages have the overrides property (for backward compatibility)
+        // Ensure all pages have the overrides property and validate canvasJSON
         if (doc.pages && Array.isArray(doc.pages)) {
-          doc.pages = doc.pages.map(page => ({
-            ...page,
-            overrides: page.overrides || {}
-          }));
+          console.log(`Document ${doc.id} has ${doc.pages.length} pages`);
+          
+          doc.pages = doc.pages.map((page, index) => {
+            // Add default overrides if missing (backward compatibility)
+            const pageWithOverrides = {
+              ...page,
+              overrides: page.overrides || {}
+            };
+            
+            // Validate canvasJSON
+            if (pageWithOverrides.canvasJSON) {
+              console.log(`Loaded page ${index} (${page.id}) has canvasJSON of type ${typeof pageWithOverrides.canvasJSON} and length ${typeof pageWithOverrides.canvasJSON === 'string' ? pageWithOverrides.canvasJSON.length : JSON.stringify(pageWithOverrides.canvasJSON).length}`);
+              
+              // If it's a string, try to parse it
+              if (typeof pageWithOverrides.canvasJSON === 'string') {
+                try {
+                  // Verify the JSON by parsing it
+                  const parsedJSON = JSON.parse(pageWithOverrides.canvasJSON);
+                  const objectCount = parsedJSON.objects ? parsedJSON.objects.length : 0;
+                  console.log(`  - Page ${page.id} has valid JSON with ${objectCount} objects`);
+                } catch (err) {
+                  console.error(`  - Error parsing canvasJSON for page ${page.id}:`, err);
+                  console.error(`  - First 100 chars: ${pageWithOverrides.canvasJSON.substring(0, 100)}...`);
+                  
+                  // Reset to default empty canvas since it's invalid
+                  pageWithOverrides.canvasJSON = '{"objects":[],"background":"white"}';
+                }
+              } else if (typeof pageWithOverrides.canvasJSON === 'object' && pageWithOverrides.canvasJSON !== null) {
+                // It's already an object, make sure it has the expected structure
+                const objectCount = pageWithOverrides.canvasJSON.objects ? pageWithOverrides.canvasJSON.objects.length : 0;
+                console.log(`  - Page ${page.id} has object-type JSON with ${objectCount} objects`);
+              } else {
+                console.warn(`  - Page ${page.id} has unexpected canvasJSON type: ${typeof pageWithOverrides.canvasJSON}`);
+                // Reset to default empty canvas
+                pageWithOverrides.canvasJSON = '{"objects":[],"background":"white"}';
+              }
+            } else {
+              console.log(`  - Page ${page.id} has no canvasJSON data`);
+            }
+            
+            return pageWithOverrides;
+          });
         }
         
         resolve(doc);

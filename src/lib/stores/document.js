@@ -121,20 +121,33 @@ export function updateDocument(document) {
 
 /**
  * Add a new page to the current document
+ * @param {string|null} [masterPageId=null] - Optional master page ID to apply to the new page
  */
-export function addPage() {
+export function addPage(masterPageId = null) {
   currentDocument.update(doc => {
     if (!doc) return doc;
     
     const newPageId = `page-${doc.pages.length + 1}`;
     
-    doc.pages.push({
+    // Create the new page
+    const newPage = {
       id: newPageId,
-      canvasJSON: null,
-      masterPageId: null,
+      canvasJSON: null, // Empty canvas for new pages
+      masterPageId: masterPageId, // Apply master page if specified
       overrides: {}
-    });
+    };
     
+    // If masterPageId is provided, check if it exists
+    if (masterPageId) {
+      const masterPage = doc.masterPages.find(mp => mp.id === masterPageId);
+      if (!masterPage) {
+        console.warn(`Master page with ID ${masterPageId} not found`);
+        newPage.masterPageId = null;
+      }
+    }
+    
+    // Add the new page to the document
+    doc.pages.push(newPage);
     doc.lastModified = new Date();
     
     // Set the new page as the current page
