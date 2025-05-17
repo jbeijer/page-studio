@@ -395,7 +395,11 @@
     window.$page = $currentPage;
     window.$document = $currentDocument;
     window.$updateDocument = currentDocument.update;
-    window.$globalContext = context;
+    
+    // Only set these if they're defined (fix context reference error)
+    if (typeof context !== 'undefined') {
+      window.$globalContext = context;
+    }
     window.saveDocument = saveDocument;
     
     console.log(`Canvas state before page switch:`, {

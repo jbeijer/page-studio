@@ -74,11 +74,13 @@ export function createDocumentManager(context) {
       // IMPORTANT: Delay document loading to ensure the canvas is fully initialized
       console.log("Delaying document loading to ensure canvas is fully initialized");
       
-      // First set a blank document to initialize components
+      // First set a temporary document to initialize components
+      // Copy all pages from the loaded document to preserve structure
       setCurrentDocument({
         id: 'temp-doc',
         title: 'Loading...',
-        pages: [{
+        // Use the actual pages from the loaded document to preserve page structure
+        pages: loadedDocument.pages || [{
           id: 'loading-page',
           canvasJSON: JSON.stringify({
             version: "4.6.0",
@@ -86,14 +88,20 @@ export function createDocumentManager(context) {
             background: "white"
           })
         }],
-        masterPages: [],
+        masterPages: loadedDocument.masterPages || [],
         created: new Date(),
         lastModified: new Date(),
-        format: 'A4',
-        metadata: {
+        format: loadedDocument.format || 'A4',
+        metadata: loadedDocument.metadata || {
           pageSize: { width: 210, height: 297 }
         }
       });
+      
+      // Also make sure we always set a current page
+      if (loadedDocument.pages && loadedDocument.pages.length > 0 && !get(currentPage)) {
+        // Set first page as active
+        currentPage.set(loadedDocument.pages[0].id);
+      }
       
       // Return a promise that resolves when the document is fully loaded
       return new Promise(resolve => {
@@ -105,6 +113,17 @@ export function createDocumentManager(context) {
           // Force canvas refresh after another small delay
           setTimeout(() => {
             checkAndFixCanvasObjects(loadedDocument);
+            
+            // Make sure we have a current page selected
+            if (loadedDocument.pages && loadedDocument.pages.length > 0) {
+              // If no page is selected, use the first page
+              const currentPageValue = get(currentPage);
+              if (!currentPageValue || currentPageValue === 'loading-page') {
+                console.log(`Setting default page to ${loadedDocument.pages[0].id}`);
+                currentPage.set(loadedDocument.pages[0].id);
+              }
+            }
+            
             resolve(loadedDocument);
           }, 200);
         }, 500);
@@ -458,6 +477,32 @@ export function createDocumentManager(context) {
     if (canvasComponent && canvasComponent.saveCurrentPage) {
       console.log("Force Save: Saving current page to document");
       canvasComponent.saveCurrentPage();
+    }
+    
+    // Synchronize with stored page references to ensure we don't lose any pages
+    // when saving through components that might have lost context
+    if (window.$document && window.$document.pages) {
+      // Check if we need to synchronize pages
+      if (doc.pages.length < window.$document.pages.length) {
+        console.log(`Force Save: Synchronizing pages - document has ${doc.pages.length} pages but window.$document has ${window.$document.pages.length} pages`);
+        
+        // Create a map of existing page IDs
+        const existingPageIds = new Set(doc.pages.map(p => p.id));
+        
+        // Add missing pages from window.$document
+        window.$document.pages.forEach(page => {
+          if (!existingPageIds.has(page.id)) {
+            console.log(`Force Save: Adding missing page ${page.id} from window.$document`);
+            doc.pages.push(page);
+          }
+        });
+        
+        // Update the document store
+        updateDocument({
+          ...doc,
+          lastModified: new Date()
+        });
+      }
     }
     
     // Important - save the current document state into a local variable to prevent
