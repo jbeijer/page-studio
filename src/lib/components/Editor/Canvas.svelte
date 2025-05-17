@@ -4,6 +4,8 @@
   import { activeTool, ToolType, currentToolOptions } from '$lib/stores/toolbar';
   import * as fabric from 'fabric';
   import TextFlow from '$lib/utils/text-flow';
+  import HistoryManager from '$lib/utils/history-manager';
+  import MasterObjectContextMenu from './MasterObjectContextMenu.svelte';
   
   const dispatch = createEventDispatcher();
   
@@ -18,6 +20,17 @@
   let imageInput;
   let selectedObject = null;
   let textFlow;
+  let historyManager;
+  
+  // History state
+  let canUndo = false;
+  let canRedo = false;
+  
+  // Context menu state
+  let showContextMenu = false;
+  let contextMenuX = 0;
+  let contextMenuY = 0;
+  let contextMenuObject = null;
   
   // Generate a unique ID for objects when needed
   function generateId() {
@@ -56,7 +69,8 @@
       pages = $currentDocument.pages || [{ 
         id: 'page-1', 
         canvasJSON: null,
-        masterPageId: null
+        masterPageId: null,
+        overrides: {}
       }];
       
       // Set first page as active
@@ -69,9 +83,17 @@
     canvas.on('mouse:down', handleMouseDown);
     canvas.on('mouse:move', handleMouseMove);
     canvas.on('mouse:up', handleMouseUp);
+    canvas.on('mouse:dblclick', handleDoubleClick);
     canvas.on('selection:created', handleObjectSelected);
     canvas.on('selection:updated', handleObjectSelected);
     canvas.on('selection:cleared', handleSelectionCleared);
+    
+    // Add right-click (context menu) handler
+    canvas.on('mouse:down', function(options) {
+      if (options.e.button === 2) { // Right click
+        handleRightClick(options);
+      }
+    });
     
     // Listen for changes to update store
     canvas.on('object:modified', saveCurrentPage);
@@ -84,14 +106,56 @@
     // Initialize TextFlow manager
     textFlow = new TextFlow(canvas);
     
+    // Initialize HistoryManager
+    historyManager = new HistoryManager(canvas, {
+      onChange: (state) => {
+        canUndo = state.canUndo;
+        canRedo = state.canRedo;
+        dispatch('historyChange', { canUndo, canRedo });
+      }
+    });
+    
+    // Set up keyboard shortcuts for undo/redo
+    const handleKeyboard = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        // Ctrl+Z or Cmd+Z for Undo
+        e.preventDefault();
+        undo();
+      } else if (
+        ((e.ctrlKey || e.metaKey) && e.key === 'y') || 
+        ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'z')
+      ) {
+        // Ctrl+Y or Cmd+Y or Ctrl+Shift+Z or Cmd+Shift+Z for Redo
+        e.preventDefault();
+        redo();
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        // Delete selected objects
+        if (canvas.getActiveObject()) {
+          deleteSelectedObjects();
+        }
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyboard);
+    
     return () => {
       // Clean up canvas on component unmount
       canvas.off('mouse:down', handleMouseDown);
       canvas.off('mouse:move', handleMouseMove);
       canvas.off('mouse:up', handleMouseUp);
+      canvas.off('mouse:dblclick', handleDoubleClick);
       canvas.off('selection:created', handleObjectSelected);
       canvas.off('selection:updated', handleObjectSelected);
       canvas.off('selection:cleared', handleSelectionCleared);
+      
+      // Clean up history manager
+      if (historyManager) {
+        historyManager.dispose();
+      }
+      
+      // Remove keyboard event listener
+      window.removeEventListener('keydown', handleKeyboard);
+      
       canvas.dispose();
     };
   });
@@ -140,10 +204,9 @@
         }
       }
       
-      // Apply master page if specified (placeholder for future implementation)
+      // Apply master page if specified
       if (pageToLoad.masterPageId) {
-        // This will be implemented later
-        console.log(`Master page ${pageToLoad.masterPageId} will be applied`);
+        applyMasterPage(pageToLoad.masterPageId, pageToLoad.overrides || {});
       }
     }
   }
@@ -153,13 +216,27 @@
     
     const pageIndex = $currentDocument.pages.findIndex(p => p.id === $currentPage);
     if (pageIndex >= 0) {
-      // Serialize canvas with custom properties (like textbox IDs and link references)
-      const canvasJSON = JSON.stringify(canvas.toJSON(['id', 'linkedObjectIds']));
+      // Serialize canvas with custom properties
+      const canvasJSON = JSON.stringify(canvas.toJSON([
+        'id', 
+        'linkedObjectIds', 
+        'fromMaster', 
+        'masterId', 
+        'masterObjectId', 
+        'overridable'
+      ]));
       
       const updatedPages = [...$currentDocument.pages];
+      
+      // Preserve the masterPageId and overrides when saving
+      const masterPageId = updatedPages[pageIndex].masterPageId;
+      const overrides = updatedPages[pageIndex].overrides || {};
+      
       updatedPages[pageIndex] = {
         ...updatedPages[pageIndex],
-        canvasJSON: canvasJSON
+        canvasJSON: canvasJSON,
+        masterPageId: masterPageId,
+        overrides: overrides
       };
       
       currentDocument.update(doc => ({
@@ -183,8 +260,14 @@
     // Make objects selectable only with the select tool
     const canvasObjects = canvas.getObjects();
     canvasObjects.forEach(obj => {
-      obj.selectable = toolType === ToolType.SELECT;
-      obj.evented = toolType === ToolType.SELECT;
+      // Master page objects have special handling
+      if (obj.fromMaster) {
+        obj.selectable = false; // Master objects are never directly selectable
+        obj.evented = true; // But they can receive events for context menu
+      } else {
+        obj.selectable = toolType === ToolType.SELECT;
+        obj.evented = toolType === ToolType.SELECT;
+      }
     });
     
     // Reset the cursor
@@ -500,12 +583,85 @@
       }
     }
     
-    dispatch('objectselected', { object: activeObject, objectType: activeObject?.type });
+    // If the selected object is from a master page, pass that info
+    const isMasterObject = activeObject && activeObject.fromMaster === true;
+    
+    dispatch('objectselected', { 
+      object: activeObject, 
+      objectType: activeObject?.type,
+      fromMaster: isMasterObject,
+      masterId: isMasterObject ? activeObject.masterId : null,
+      masterObjectId: isMasterObject ? activeObject.masterObjectId : null,
+      overridable: isMasterObject ? activeObject.overridable : null
+    });
   }
   
   function handleSelectionCleared() {
     selectedObject = null;
     dispatch('objectselected', { object: null, objectType: null });
+  }
+  
+  /**
+   * Handle right-click events on canvas objects
+   * @param {Object} options - Fabric.js mouse event options
+   */
+  function handleRightClick(options) {
+    options.e.preventDefault();
+    
+    const pointer = canvas.getPointer(options.e);
+    
+    if (options.target && options.target.fromMaster) {
+      // Right-click on a master page object
+      contextMenuX = options.e.clientX;
+      contextMenuY = options.e.clientY;
+      contextMenuObject = options.target;
+      showContextMenu = true;
+      
+      // Also dispatch event for external components
+      dispatch('masterObjectRightClick', {
+        object: options.target,
+        x: options.e.clientX,
+        y: options.e.clientY
+      });
+    } else {
+      // Hide the context menu if clicking elsewhere
+      showContextMenu = false;
+    }
+    
+    return false;
+  }
+  
+  /**
+   * Handle double-click events on canvas objects
+   * @param {Object} options - Fabric.js mouse event options
+   */
+  function handleDoubleClick(options) {
+    if (options.target && options.target.fromMaster && options.target.overridable) {
+      // Double-click on an overridable master page object - auto-override it
+      overrideMasterObject(options.target);
+    }
+  }
+  
+  /**
+   * Handle context menu override action
+   * @param {Object} event - Event object containing the target object
+   */
+  function handleContextMenuOverride(event) {
+    const { object } = event.detail;
+    if (object && object.fromMaster && object.overridable) {
+      overrideMasterObject(object);
+    }
+  }
+  
+  /**
+   * Handle context menu edit master action
+   * @param {Object} event - Event object containing the master ID
+   */
+  function handleContextMenuEditMaster(event) {
+    const { masterId } = event.detail;
+    if (masterId) {
+      dispatch('editMasterPage', { masterPageId: masterId });
+    }
   }
   
   // Function to handle textflow when text object content changes
@@ -519,6 +675,132 @@
     }
   }
   
+  /**
+   * Apply a master page to the current canvas
+   * @param {string} masterPageId - ID of the master page to apply
+   * @param {Object} overrides - Map of overridden master objects
+   */
+  function applyMasterPage(masterPageId, overrides = {}) {
+    if (!canvas || !$currentDocument) return;
+    
+    // Find the master page
+    const masterPage = $currentDocument.masterPages.find(mp => mp.id === masterPageId);
+    if (!masterPage || !masterPage.canvasJSON) return;
+    
+    try {
+      // Parse JSON if it's a string
+      const jsonData = typeof masterPage.canvasJSON === 'string'
+        ? JSON.parse(masterPage.canvasJSON)
+        : masterPage.canvasJSON;
+        
+      // Keep track of current objects
+      const currentObjects = canvas.getObjects();
+      const currentObjectsMap = {};
+      
+      // Map current objects by their IDs for later reference
+      currentObjects.forEach(obj => {
+        if (obj.id) {
+          currentObjectsMap[obj.id] = obj;
+        }
+      });
+      
+      // Process master page objects
+      if (jsonData && jsonData.objects && Array.isArray(jsonData.objects)) {
+        jsonData.objects.forEach(objData => {
+          // Skip objects that are overridden
+          if (objData.masterObjectId && overrides[objData.masterObjectId]) {
+            return;
+          }
+          
+          // Create the fabric object from the JSON
+          fabric.util.enlivenObjects([objData], (objects) => {
+            if (objects.length === 0) return;
+            
+            const fabricObj = objects[0];
+            
+            // Mark as from master page
+            fabricObj.fromMaster = true;
+            fabricObj.masterId = masterPageId;
+            fabricObj.masterObjectId = objData.masterObjectId || `master-obj-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+            fabricObj.overridable = objData.overridable !== false; // Default to true
+            
+            // Special settings for master objects
+            fabricObj.selectable = false;
+            fabricObj.evented = true; // Allow events for context menu
+            fabricObj.hoverCursor = 'not-allowed';
+            
+            // Add a subtle visual difference to master objects
+            fabricObj.opacity = fabricObj.opacity || 1;
+            
+            // Add to canvas
+            canvas.add(fabricObj);
+            
+            // Make sure master objects are rendered behind regular objects
+            fabricObj.moveTo(0);
+          });
+        });
+      }
+      
+      canvas.renderAll();
+    } catch (err) {
+      console.error('Error applying master page:', err);
+    }
+  }
+  
+  /**
+   * Override a master page object
+   * @param {Object} masterObject - The master object to override
+   */
+  export function overrideMasterObject(masterObject) {
+    if (!canvas || !masterObject || !masterObject.fromMaster || !masterObject.masterObjectId) return;
+    
+    // Clone the master object without master-specific properties
+    const clone = fabric.util.object.clone(masterObject);
+    
+    // Remove master-specific properties
+    clone.fromMaster = false;
+    clone.masterId = undefined;
+    clone.masterObjectId = undefined;
+    clone.overridable = undefined;
+    
+    // Make selectable and interactive
+    clone.selectable = true;
+    clone.evented = true;
+    clone.hoverCursor = 'move';
+    
+    // Restore full opacity
+    clone.opacity = 1;
+    
+    // Add to canvas
+    canvas.add(clone);
+    
+    // Remove the master object
+    canvas.remove(masterObject);
+    
+    // Mark as overridden in the current page
+    if ($currentPage && $currentDocument) {
+      const pageIndex = $currentDocument.pages.findIndex(p => p.id === $currentPage);
+      if (pageIndex >= 0) {
+        const updatedPages = [...$currentDocument.pages];
+        if (!updatedPages[pageIndex].overrides) {
+          updatedPages[pageIndex].overrides = {};
+        }
+        
+        updatedPages[pageIndex].overrides[masterObject.masterObjectId] = true;
+        
+        currentDocument.update(doc => ({
+          ...doc,
+          pages: updatedPages,
+          lastModified: new Date()
+        }));
+      }
+    }
+    
+    canvas.renderAll();
+    
+    return clone;
+  }
+  
   // Export functions for external components
   export function getCanvas() {
     return canvas;
@@ -530,6 +812,81 @@
   
   export function getTextFlow() {
     return textFlow;
+  }
+  
+  /**
+   * Check if an object is from a master page
+   * @param {Object} obj - The object to check
+   * @returns {boolean} Whether the object is from a master page
+   */
+  export function isObjectFromMaster(obj) {
+    return obj && obj.fromMaster === true;
+  }
+  
+  /**
+   * Get a list of all master page objects on the canvas
+   * @returns {Array} Array of master page objects
+   */
+  export function getMasterPageObjects() {
+    if (!canvas) return [];
+    
+    return canvas.getObjects().filter(obj => obj.fromMaster);
+  }
+  
+  /**
+   * Undo the last canvas action
+   */
+  export function undo() {
+    if (historyManager && historyManager.canUndo()) {
+      historyManager.undo();
+    }
+  }
+  
+  /**
+   * Redo the last undone action
+   */
+  export function redo() {
+    if (historyManager && historyManager.canRedo()) {
+      historyManager.redo();
+    }
+  }
+  
+  /**
+   * Delete currently selected objects
+   */
+  export function deleteSelectedObjects() {
+    if (!canvas) return;
+    
+    const activeObject = canvas.getActiveObject();
+    if (!activeObject) return;
+    
+    // Check if it's a master page object
+    if (activeObject.fromMaster && activeObject.overridable) {
+      // If it's an overridable master object, override it first, then delete
+      const overriddenObj = overrideMasterObject(activeObject);
+      if (overriddenObj) {
+        canvas.remove(overriddenObj);
+      }
+    } else if (!activeObject.fromMaster || activeObject.fromMaster === false) {
+      // For regular objects or overridden master objects
+      if (activeObject.type === 'activeSelection') {
+        // For multiple selected objects
+        activeObject.forEachObject(obj => {
+          if (!obj.fromMaster || obj.fromMaster === false) {
+            canvas.remove(obj);
+          }
+        });
+        canvas.discardActiveObject();
+      } else {
+        // For single selected object
+        canvas.remove(activeObject);
+      }
+    }
+    
+    canvas.renderAll();
+    selectedObject = null;
+    
+    dispatch('objectselected', { object: null, objectType: null });
   }
 </script>
 
@@ -546,6 +903,16 @@
     </div>
   </div>
 </div>
+
+<!-- Master object context menu -->
+<MasterObjectContextMenu 
+  visible={showContextMenu}
+  x={contextMenuX}
+  y={contextMenuY}
+  object={contextMenuObject}
+  on:override={handleContextMenuOverride}
+  on:editMaster={handleContextMenuEditMaster}
+/>
 
 <!-- Hidden file input for image tool -->
 <input 

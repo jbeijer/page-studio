@@ -214,10 +214,44 @@ export const clipboard = writable<CanvasObject[]>([]);
 export const zoomLevel = writable<number>(100);
 export const showGrid = writable<boolean>(true);
 export const showGuides = writable<boolean>(true);
+export const canUndo = writable<boolean>(false);
+export const canRedo = writable<boolean>(false);
 
 // templates.ts - Hanterar templates/mallar
 export const templateLibrary = writable<Template[]>([]);
 ```
+
+### 3.3. Historik- och Ångra/Göra Om-hantering
+
+För att hantera historik och ångra/göra om-funktionalitet används en HistoryManager-klass:
+
+```typescript
+class HistoryManager {
+  // Sparar canvas-tillstånd i en stack för ångra-funktionalitet
+  private undoStack: string[] = [];
+  
+  // Sparar tillstånd som har ångrats, för att kunna göra om
+  private redoStack: string[] = [];
+  
+  // Spara canvas-tillstånd
+  saveState(canvas: fabric.Canvas): void;
+  
+  // Återställ tidigare canvas-tillstånd
+  undo(): void;
+  
+  // Återställ ett ångrat tillstånd
+  redo(): void;
+  
+  // Kontrollera om ångra/göra om är tillgängligt
+  canUndo(): boolean;
+  canRedo(): boolean;
+}
+```
+
+HistoryManager integreras med Canvas-komponenten för att spara tillstånd automatiskt vid ändringar:
+- Skapar en ny post i historiken när objekt läggs till, ändras eller tas bort
+- Begränsar stackstorleken för att kontrollera minnesanvändning
+- Koordinerar med dokumentlagring för att säkerställa att ändringarna bevaras
 
 ## 4. Nyckelprocesser
 
@@ -253,10 +287,47 @@ export const templateLibrary = writable<Template[]>([]);
 4. Metadata läggs till i PDF:en
 
 ### 4.3. Mallsidor
-1. Mallsida skapas som en separat canvas
-2. Objekt på mallsidan markeras med flaggan `fromMasterPage: true`
-3. Vid sidladdning läggs mallsideobjekt in först, sedan sidans specifika objekt
-4. Mallsideobjekt är låsta men kan göras redigerbara med override-funktion
+1. Mallsida skapas som en separat canvas med en dedikerad MasterPageEditor-komponent
+2. Objekt på mallsidan markeras med metadata:
+   ```typescript
+   {
+     fromMaster: true,        // Indikerar att objektet kommer från en mallsida
+     masterId: string,        // ID för den mallsida objektet kommer från
+     masterObjectId: string,  // Unikt ID för objektet på mallsidan
+     overridable: boolean     // Om objektet kan överridas på specifika sidor
+   }
+   ```
+3. Vid sidladdning:
+   - Canvas rensas
+   - Dokumentsidans specifika innehåll laddas
+   - Mallsideobjekt appliceras, med hänsyn till overrides
+   - Allt renderas i korrekt ordning
+
+4. Mallsideobjekt har speciella visuella indikationer och interaktionsmodell:
+   - Visas med annan opacitet eller visuell stil för att indikera att de är mallsideobjekt
+   - Normalt låsta för redigering
+   - Kan överridas via kontextmeny (högerklick) eller dubbelklick
+   - Överridda objekt blir normala sidobjekt och markeras i sidans overrides-tabell
+
+5. Överridehantering:
+   ```typescript
+   interface Page {
+     // ...andra egenskaper
+     masterPageId: string | null;
+     overrides: {
+       [masterObjectId: string]: boolean;
+     };
+   }
+   ```
+   - Vid överriding klonas mallsideobjektet och läggs till på sidan
+   - Originalobjektet från mallsidan visas inte
+   - Det överridda objektet är helt redigerbart
+
+6. Mallsidepanel (MasterPagePanel):
+   - Visar lista över tillgängliga mallsidor med miniatyrer
+   - Gränssnitt för att skapa, redigera och ta bort mallsidor
+   - Knappar för att applicera mallsidor på aktuell sida eller alla sidor
+   - Stöd för mallsidehierarki (baserade på andra mallsidor)
 
 ## 5. Tekniska utmaningar och lösningar
 
@@ -286,6 +357,17 @@ export const templateLibrary = writable<Template[]>([]);
 - Optimerad canvas-rendering
 - Virtualiserad sidnavigator för stora dokument
 - WebWorkers för tunga beräkningar (textflöde, PDF-export)
+
+### 5.4. Historik och ångra/göra om-funktionalitet
+**Utmaning**: Implementera en robust ångra/göra om-funktionalitet som hanterar alla typer av ändringar.
+
+**Lösning**:
+- Historikhantering med HistoryManager-klass som spårar alla canvas-states
+- Serialisering av canvas-tillstånd med alla specialattribut (inklusive textflöde och mallsideobjekt)
+- Optimerad minnesanvändning genom att begränsa historikstackens storlek
+- Integration med kortkommandon (Ctrl+Z, Ctrl+Y) för smidig användarupplevelse
+- Strategier för att hantera interaktion mellan ångra/göra om och olika objekt (speciellt mallsideobjekt)
+- Kontextkänsliga knappar i UI som speglar möjligheten att ångra/göra om
 
 ## 6. Säkerhet och datahantering
 

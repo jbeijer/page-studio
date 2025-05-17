@@ -40,7 +40,7 @@ Denna tasklista ger en nedbrytning av alla konkreta arbetsuppgifter som behöver
 - [x] Implementera objekt-transformation (rotera, skala) (6 timmar) - **PRIO: HÖG**
 - [ ] Skapa funktionalitet för objektlager (framåt/bakåt) (2 timmar) - **PRIO: HÖG**
 - [ ] Implementera kopiera/klistra in-funktionalitet (2 timmar) - **PRIO: MEDIUM**
-- [ ] Skapa ångra/gör om-funktion (4 timmar) - **PRIO: HÖG**
+- [x] Skapa ångra/gör om-funktion (4 timmar) - **PRIO: HÖG**
 
 ### Texthantering & Formatering
 - [x] Bygga textredigeringskomponent (6 timmar) - **PRIO: HÖG**
@@ -90,14 +90,14 @@ Denna tasklista ger en nedbrytning av alla konkreta arbetsuppgifter som behöver
 - [x] Testa och optimera textflödeshantering (8 timmar) - **PRIO: HÖG**
 
 ### Mallsidor & Templates
-- [ ] Designa mallsidemodell (2 timmar) - **PRIO: HÖG**
-- [ ] Implementera mallsidhantering (6 timmar) - **PRIO: HÖG**
-- [ ] Utveckla UI för att skapa mallsidor (4 timmar) - **PRIO: HÖG**
-- [ ] Skapa funktionalitet för att applicera mallsidor (4 timmar) - **PRIO: HÖG**
-- [ ] Implementera låsfunktionalitet för mallsideobjekt (3 timmar) - **PRIO: HÖG**
-- [ ] Utveckla mallsideöverrides (6 timmar) - **PRIO: MEDIUM**
-- [ ] Skapa template-sparningsfunktionalitet (4 timmar) - **PRIO: HÖG**
-- [ ] Implementera template-laddningsfunktionalitet (4 timmar) - **PRIO: HÖG**
+- [x] Designa mallsidemodell (2 timmar) - **PRIO: HÖG**
+- [x] Implementera mallsidhantering (6 timmar) - **PRIO: HÖG**
+- [x] Utveckla UI för att skapa mallsidor (4 timmar) - **PRIO: HÖG**
+- [x] Skapa funktionalitet för att applicera mallsidor (4 timmar) - **PRIO: HÖG**
+- [x] Implementera låsfunktionalitet för mallsideobjekt (3 timmar) - **PRIO: HÖG**
+- [x] Utveckla mallsideöverrides (6 timmar) - **PRIO: MEDIUM**
+- [x] Skapa template-sparningsfunktionalitet (4 timmar) - **PRIO: HÖG**
+- [x] Implementera template-laddningsfunktionalitet (4 timmar) - **PRIO: HÖG**
 - [ ] Utveckla template-bibliotek (6 timmar) - **PRIO: MEDIUM**
 - [ ] Skapa mallkategorisering (2 timmar) - **PRIO: LÅG**
 

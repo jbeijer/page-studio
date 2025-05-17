@@ -4,6 +4,7 @@
   import Canvas from '$lib/components/Editor/Canvas.svelte';
   import Toolbar from '$lib/components/Editor/Toolbar.svelte';
   import TextEditingPanel from '$lib/components/Editor/TextEditingPanel.svelte';
+  import MasterPageController from '$lib/components/Editor/MasterPageController.svelte';
   import { createDocument, setCurrentDocument, currentDocument, currentPage, addPage, updateDocument } from '$lib/stores/document';
   import { activeTool, ToolType, updateToolOptions } from '$lib/stores/toolbar';
   import { saveDocument, loadDocument } from '$lib/utils/storage';
@@ -15,6 +16,10 @@
   let isSaving = false;
   let saveError = null;
   let documentTitle = '';
+  let masterPagePanelVisible = false;
+  let masterPageController;
+  let canUndo = false;
+  let canRedo = false;
   
   let title = "PageStudio Editor";
   
@@ -103,8 +108,49 @@
     selectedObjectType = event.detail.objectType;
   }
   
+  function handleHistoryChange(event) {
+    canUndo = event.detail.canUndo;
+    canRedo = event.detail.canRedo;
+  }
+  
+  function handleUndo() {
+    if (canvasComponent) {
+      canvasComponent.undo();
+    }
+  }
+  
+  function handleRedo() {
+    if (canvasComponent) {
+      canvasComponent.redo();
+    }
+  }
+  
+  function handleDeleteObject() {
+    if (canvasComponent) {
+      canvasComponent.deleteSelectedObjects();
+    }
+  }
+  
   function handleBackToHome() {
     goto('/');
+  }
+  
+  function toggleMasterPagePanel() {
+    if (masterPageController) {
+      masterPageController.togglePanel();
+    }
+  }
+  
+  function handleEditMasterPage(event) {
+    const { masterPageId } = event.detail;
+    // TODO: Implement master page editing
+  }
+  
+  function handleMasterPageApplied(event) {
+    // Refresh the canvas to show the applied master page
+    if (canvasComponent) {
+      canvasComponent.loadPage($currentPage);
+    }
   }
 </script>
 
@@ -141,6 +187,12 @@
       {:else if saveError}
         <span class="text-red-500 text-sm mr-2">{saveError}</span>
       {/if}
+      <button class="btn btn-secondary" on:click={toggleMasterPagePanel} title="Master Pages">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+          <path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.669 0 3.218.51 4.5 1.385A7.962 7.962 0 0114.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0014.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z" />
+        </svg>
+        Master Pages
+      </button>
       <button class="btn btn-secondary" on:click={handleSave} disabled={isSaving}>Save</button>
       <button class="btn btn-primary" on:click={handleExport}>Export PDF</button>
     </div>
@@ -153,7 +205,19 @@
     
     <!-- Canvas (center) -->
     <div class="flex-1 overflow-hidden">
-      <Canvas bind:this={canvasComponent} on:objectselected={handleObjectSelected} />
+      <Canvas 
+        bind:this={canvasComponent} 
+        on:objectselected={handleObjectSelected}
+        on:historyChange={handleHistoryChange}
+      />
+      
+      <!-- Master Page Controller -->
+      <MasterPageController 
+        bind:this={masterPageController}
+        canvasComponent={canvasComponent}
+        on:editMasterPage={handleEditMasterPage}
+        on:masterPageApplied={handleMasterPageApplied}
+      />
     </div>
     
     <!-- Properties panel (right) -->
@@ -201,6 +265,47 @@
                 <button class="btn btn-sm btn-secondary" on:click={() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', ctrlKey: true }))}>Move Down</button>
                 <button class="btn btn-sm btn-secondary" on:click={() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'r' }))}>Rotate</button>
                 <button class="btn btn-sm btn-secondary" on:click={() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'h' }))}>Flip</button>
+              </div>
+            </div>
+            
+            <!-- Edit History Controls -->
+            <div class="mt-4">
+              <h4 class="text-sm font-medium mb-2">Edit</h4>
+              <div class="grid grid-cols-3 gap-2">
+                <button 
+                  class="btn btn-sm btn-secondary" 
+                  on:click={handleUndo} 
+                  disabled={!canUndo}
+                  title="Undo (Ctrl+Z)"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a4 4 0 0 1 0 8H9" />
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10l5-5-5-5" />
+                  </svg>
+                  Undo
+                </button>
+                <button 
+                  class="btn btn-sm btn-secondary" 
+                  on:click={handleRedo} 
+                  disabled={!canRedo}
+                  title="Redo (Ctrl+Y)"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 10H11a4 4 0 0 0 0 8h4" />
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 10l-5-5 5-5" />
+                  </svg>
+                  Redo
+                </button>
+                <button 
+                  class="btn btn-sm btn-danger" 
+                  on:click={handleDeleteObject}
+                  title="Delete (Del)"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                  Delete
+                </button>
               </div>
             </div>
           {/if}

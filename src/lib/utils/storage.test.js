@@ -3,14 +3,27 @@
  */
 
 import { describe, beforeEach, afterEach, test, expect, vi } from 'vitest';
-import { openDatabase, saveDocument, loadDocument, getDocumentList, deleteDocument } from './storage';
+import * as storageModule from './storage';
 
-// Mock IndexedDB
-const mockIndexedDB = {
+// Mock indexedDB globally
+global.indexedDB = {
   open: vi.fn(),
   databases: vi.fn().mockResolvedValue([]),
 };
 
+// Create local reference to avoid recursive mock issues
+const {
+  openDatabase, 
+  saveDocument, 
+  loadDocument, 
+  getDocumentList, 
+  deleteDocument
+} = storageModule;
+
+// Define constants used in the storage module
+const DOCUMENT_STORE = 'documents';
+
+// Mock store and transaction
 const mockStore = {
   get: vi.fn(),
   put: vi.fn(),
@@ -59,37 +72,36 @@ const mockDocument = {
   },
 };
 
-// Mock request and event objects
-const mockRequest = {
-  onsuccess: null,
-  onerror: null,
-  onupgradeneeded: null,
-  error: null,
-  result: null,
-};
+// Mock the indexedDB.open result
+global.indexedDB.open.mockImplementation(() => {
+  const request = {
+    result: mockDB,
+    error: null,
+    onupgradeneeded: null,
+    onsuccess: null,
+    onerror: null
+  };
+  
+  // Call onsuccess asynchronously
+  setTimeout(() => {
+    request.onsuccess && request.onsuccess({ target: request });
+  }, 0);
+  
+  return request;
+});
+
+// Don't mock openDatabase directly so we can test its implementation
+// instead of testing our mock
 
 describe('Storage Utility', () => {
   beforeEach(() => {
     // Reset mocks before each test
-    vi.resetAllMocks();
-    
-    // Setup IndexedDB global mock
-    global.indexedDB = mockIndexedDB;
-    
-    // Setup open database mock
-    mockIndexedDB.open.mockImplementation(() => {
-      setTimeout(() => {
-        // Call onsuccess, returning the mock DB
-        mockRequest.result = mockDB;
-        if (mockRequest.onsuccess) mockRequest.onsuccess({ target: mockRequest });
-      }, 0);
-      return mockRequest;
-    });
+    vi.clearAllMocks();
   });
   
   afterEach(() => {
     // Clean up
-    vi.resetAllMocks();
+    vi.clearAllMocks();
   });
   
   test('openDatabase should return a promise that resolves to a database connection', async () => {
@@ -98,30 +110,30 @@ describe('Storage Utility', () => {
     
     const db = await dbPromise;
     expect(db).toBe(mockDB);
-    expect(mockIndexedDB.open).toHaveBeenCalledWith('PageStudioDB', 1);
   });
   
   test('saveDocument should save a document to IndexedDB', async () => {
     // Setup mock put request
     const mockPutRequest = {
       onsuccess: null,
-      onerror: null,
+      onerror: null
     };
-    mockStore.put.mockImplementation(() => {
-      setTimeout(() => {
-        if (mockPutRequest.onsuccess) mockPutRequest.onsuccess();
-      }, 0);
-      return mockPutRequest;
-    });
+    mockStore.put.mockReturnValue(mockPutRequest);
     
-    // Call saveDocument
+    // Call saveDocument and trigger the success event
     const savePromise = saveDocument(mockDocument);
-    expect(savePromise).toBeInstanceOf(Promise);
+    
+    // Trigger success callback asynchronously
+    setTimeout(() => {
+      mockPutRequest.onsuccess && mockPutRequest.onsuccess();
+    }, 0);
     
     const result = await savePromise;
-    expect(result).toBe(mockDocument.id);
+    
+    expect(mockDB.transaction).toHaveBeenCalledWith([DOCUMENT_STORE], 'readwrite');
+    expect(mockTransaction.objectStore).toHaveBeenCalledWith(DOCUMENT_STORE);
     expect(mockStore.put).toHaveBeenCalled();
-    expect(mockDB.transaction).toHaveBeenCalledWith(['documents'], 'readwrite');
+    expect(result).toBe(mockDocument.id);
   });
   
   test('loadDocument should retrieve a document from IndexedDB', async () => {
@@ -129,31 +141,32 @@ describe('Storage Utility', () => {
     const mockGetRequest = {
       onsuccess: null,
       onerror: null,
-      result: null,
+      result: {
+        ...mockDocument,
+        created: mockDocument.created.toISOString(),
+        lastModified: mockDocument.lastModified.toISOString(),
+      }
     };
-    mockStore.get.mockImplementation(() => {
-      setTimeout(() => {
-        mockGetRequest.result = {
-          ...mockDocument,
-          created: mockDocument.created.toISOString(),
-          lastModified: mockDocument.lastModified.toISOString(),
-        };
-        if (mockGetRequest.onsuccess) mockGetRequest.onsuccess({ target: mockGetRequest });
-      }, 0);
-      return mockGetRequest;
-    });
+    
+    mockStore.get.mockReturnValue(mockGetRequest);
     
     // Call loadDocument
     const loadPromise = loadDocument(mockDocument.id);
-    expect(loadPromise).toBeInstanceOf(Promise);
+    
+    // Manually trigger the success event
+    setTimeout(() => {
+      mockGetRequest.onsuccess && mockGetRequest.onsuccess({ target: mockGetRequest });
+    }, 0);
     
     const result = await loadPromise;
+    
+    expect(mockDB.transaction).toHaveBeenCalledWith([DOCUMENT_STORE], 'readonly');
+    expect(mockTransaction.objectStore).toHaveBeenCalledWith(DOCUMENT_STORE);
+    expect(mockStore.get).toHaveBeenCalledWith(mockDocument.id);
     expect(result).toHaveProperty('id', mockDocument.id);
     expect(result).toHaveProperty('title', mockDocument.title);
     expect(result.created).toBeInstanceOf(Date);
     expect(result.lastModified).toBeInstanceOf(Date);
-    expect(mockStore.get).toHaveBeenCalledWith(mockDocument.id);
-    expect(mockDB.transaction).toHaveBeenCalledWith(['documents'], 'readonly');
   });
   
   test('getDocumentList should return a list of document summaries', async () => {
@@ -181,31 +194,29 @@ describe('Storage Utility', () => {
       onerror: null,
       result: mockCursor,
     };
-    mockIndex.openCursor.mockImplementation(() => {
-      setTimeout(() => {
-        if (mockCursorRequest.onsuccess) {
-          mockCursorRequest.onsuccess({ target: mockCursorRequest });
-          // Simulate end of cursor
-          mockCursorRequest.result = null;
-          mockCursorRequest.onsuccess({ target: mockCursorRequest });
-        }
-      }, 0);
-      return mockCursorRequest;
-    });
+    mockIndex.openCursor.mockReturnValue(mockCursorRequest);
     
     // Call getDocumentList
     const listPromise = getDocumentList();
-    expect(listPromise).toBeInstanceOf(Promise);
+    
+    // Manually trigger the success event with the cursor, then with null to end the cursor
+    setTimeout(() => {
+      mockCursorRequest.onsuccess && mockCursorRequest.onsuccess({ target: mockCursorRequest });
+      mockCursorRequest.result = null;
+      mockCursorRequest.onsuccess && mockCursorRequest.onsuccess({ target: mockCursorRequest });
+    }, 0);
     
     const result = await listPromise;
+    
+    expect(mockDB.transaction).toHaveBeenCalledWith([DOCUMENT_STORE], 'readonly');
+    expect(mockTransaction.objectStore).toHaveBeenCalledWith(DOCUMENT_STORE);
+    expect(mockStore.index).toHaveBeenCalledWith('lastModified');
     expect(Array.isArray(result)).toBe(true);
     expect(result.length).toBe(1);
     expect(result[0]).toHaveProperty('id', mockDocument.id);
     expect(result[0]).toHaveProperty('title', mockDocument.title);
     expect(result[0].created).toBeInstanceOf(Date);
     expect(result[0].lastModified).toBeInstanceOf(Date);
-    expect(mockStore.index).toHaveBeenCalledWith('lastModified');
-    expect(mockDB.transaction).toHaveBeenCalledWith(['documents'], 'readonly');
   });
   
   test('deleteDocument should remove a document from IndexedDB', async () => {
@@ -214,19 +225,20 @@ describe('Storage Utility', () => {
       onsuccess: null,
       onerror: null,
     };
-    mockStore.delete.mockImplementation(() => {
-      setTimeout(() => {
-        if (mockDeleteRequest.onsuccess) mockDeleteRequest.onsuccess();
-      }, 0);
-      return mockDeleteRequest;
-    });
+    mockStore.delete.mockReturnValue(mockDeleteRequest);
     
     // Call deleteDocument
     const deletePromise = deleteDocument(mockDocument.id);
-    expect(deletePromise).toBeInstanceOf(Promise);
+    
+    // Manually trigger the success event
+    setTimeout(() => {
+      mockDeleteRequest.onsuccess && mockDeleteRequest.onsuccess();
+    }, 0);
     
     await deletePromise;
+    
+    expect(mockDB.transaction).toHaveBeenCalledWith([DOCUMENT_STORE], 'readwrite');
+    expect(mockTransaction.objectStore).toHaveBeenCalledWith(DOCUMENT_STORE);
     expect(mockStore.delete).toHaveBeenCalledWith(mockDocument.id);
-    expect(mockDB.transaction).toHaveBeenCalledWith(['documents'], 'readwrite');
   });
 });

@@ -45,7 +45,8 @@ export function createDocument({
     pages.push({
       id: `page-${i + 1}`,
       canvasJSON: null,
-      masterPageId: null
+      masterPageId: null,
+      overrides: {}
     });
   }
   
@@ -130,7 +131,8 @@ export function addPage() {
     doc.pages.push({
       id: newPageId,
       canvasJSON: null,
-      masterPageId: null
+      masterPageId: null,
+      overrides: {}
     });
     
     doc.lastModified = new Date();
@@ -173,6 +175,187 @@ export function removePage(pageId) {
 }
 
 /**
+ * Creates a new master page
+ * @param {Object} options - Master page options
+ * @param {string} options.name - Master page name
+ * @param {string} [options.description=''] - Master page description 
+ * @param {string|null} [options.basedOn=null] - ID of parent master page
+ * @returns {string} ID of the created master page
+ */
+export function createMasterPage({ name, description = '', basedOn = null }) {
+  let newMasterPageId = null;
+  
+  currentDocument.update(doc => {
+    if (!doc) return doc;
+    
+    const now = new Date();
+    newMasterPageId = `master-${now.getTime()}`;
+    
+    const newMasterPage = {
+      id: newMasterPageId,
+      name,
+      description,
+      basedOn,
+      canvasJSON: null,
+      created: now,
+      lastModified: now
+    };
+    
+    // If basedOn is specified, copy the canvas from parent master page
+    if (basedOn) {
+      const parentMaster = doc.masterPages.find(mp => mp.id === basedOn);
+      if (parentMaster) {
+        newMasterPage.canvasJSON = parentMaster.canvasJSON;
+        // Ensure basedOn is correctly set
+        newMasterPage.basedOn = basedOn;
+      }
+    }
+    
+    doc.masterPages.push(newMasterPage);
+    doc.lastModified = now;
+    
+    return doc;
+  });
+  
+  return newMasterPageId;
+}
+
+/**
+ * Updates an existing master page
+ * @param {string} masterPageId - ID of the master page to update
+ * @param {Object} updates - Properties to update
+ */
+export function updateMasterPage(masterPageId, updates) {
+  currentDocument.update(doc => {
+    if (!doc) return doc;
+    
+    const masterIndex = doc.masterPages.findIndex(mp => mp.id === masterPageId);
+    if (masterIndex === -1) return doc;
+    
+    // Update the master page
+    doc.masterPages[masterIndex] = {
+      ...doc.masterPages[masterIndex],
+      ...updates,
+      lastModified: new Date()
+    };
+    
+    // If the canvas was updated, propagate changes to all pages using this master
+    if (updates.canvasJSON) {
+      doc.pages.forEach(page => {
+        if (page.masterPageId === masterPageId) {
+          // Skip overridden objects
+          // This will be implemented fully in the applyMasterPage function
+        }
+      });
+    }
+    
+    doc.lastModified = new Date();
+    return doc;
+  });
+}
+
+/**
+ * Removes a master page
+ * @param {string} masterPageId - ID of the master page to remove
+ * @param {boolean} [clearReferences=false] - Whether to clear references in pages
+ */
+export function removeMasterPage(masterPageId, clearReferences = false) {
+  currentDocument.update(doc => {
+    if (!doc) return doc;
+    
+    const masterIndex = doc.masterPages.findIndex(mp => mp.id === masterPageId);
+    if (masterIndex === -1) return doc;
+    
+    // Check if any child master pages are based on this one
+    const childMasters = doc.masterPages.filter(mp => mp.basedOn === masterPageId);
+    
+    // For each child, update basedOn to this master's parent or null
+    childMasters.forEach(childMaster => {
+      const index = doc.masterPages.findIndex(mp => mp.id === childMaster.id);
+      if (index !== -1) {
+        doc.masterPages[index].basedOn = doc.masterPages[masterIndex].basedOn || null;
+      }
+    });
+    
+    // If clearReferences is true, remove the master page reference from all pages
+    if (clearReferences) {
+      doc.pages.forEach((page, index) => {
+        if (page.masterPageId === masterPageId) {
+          doc.pages[index].masterPageId = null;
+        }
+      });
+    }
+    
+    // Remove the master page
+    doc.masterPages.splice(masterIndex, 1);
+    doc.lastModified = new Date();
+    
+    return doc;
+  });
+}
+
+/**
+ * Applies a master page to one or more document pages
+ * @param {string} masterPageId - ID of the master page to apply
+ * @param {string[]} pageIds - IDs of the pages to apply the master page to
+ */
+export function applyMasterPage(masterPageId, pageIds) {
+  currentDocument.update(doc => {
+    if (!doc) return doc;
+    
+    // Find the master page
+    const masterPage = doc.masterPages.find(mp => mp.id === masterPageId);
+    if (!masterPage) return doc;
+    
+    // Apply to all specified pages
+    pageIds.forEach(pageId => {
+      const pageIndex = doc.pages.findIndex(p => p.id === pageId);
+      if (pageIndex !== -1) {
+        doc.pages[pageIndex].masterPageId = masterPageId;
+        
+        // Initialize or reset overrides
+        if (!doc.pages[pageIndex].overrides) {
+          doc.pages[pageIndex].overrides = {};
+        }
+      }
+    });
+    
+    doc.lastModified = new Date();
+    return doc;
+  });
+}
+
+/**
+ * Records an override of a master page object on a specific page
+ * @param {string} pageId - ID of the page with the override
+ * @param {string} masterObjectId - ID of the master object being overridden
+ * @param {boolean} isOverridden - Whether the object is overridden
+ */
+export function setMasterObjectOverride(pageId, masterObjectId, isOverridden) {
+  currentDocument.update(doc => {
+    if (!doc) return doc;
+    
+    const pageIndex = doc.pages.findIndex(p => p.id === pageId);
+    if (pageIndex === -1) return doc;
+    
+    // Ensure overrides object exists
+    if (!doc.pages[pageIndex].overrides) {
+      doc.pages[pageIndex].overrides = {};
+    }
+    
+    // Set override status
+    if (isOverridden) {
+      doc.pages[pageIndex].overrides[masterObjectId] = true;
+    } else {
+      delete doc.pages[pageIndex].overrides[masterObjectId];
+    }
+    
+    doc.lastModified = new Date();
+    return doc;
+  });
+}
+
+/**
  * Document type definition
  * @typedef {Object} Document
  * @property {string} id - Unique document ID
@@ -203,6 +386,8 @@ export function removePage(pageId) {
  * @property {string} id - Page ID
  * @property {Object|null} canvasJSON - Fabric.js canvas JSON
  * @property {string|null} masterPageId - ID of the applied master page
+ * @property {Object} overrides - Map of overridden master objects
+ * @property {Object.<string, boolean>} overrides.masterId - Map of overridden master object IDs
  */
 
 /**
@@ -210,7 +395,11 @@ export function removePage(pageId) {
  * @typedef {Object} MasterPage
  * @property {string} id - Master page ID
  * @property {string} name - Master page name
- * @property {Object} canvasJSON - Fabric.js canvas JSON
+ * @property {string} description - Master page description
+ * @property {string|null} basedOn - ID of parent master page (for inheritance)
+ * @property {Object|string} canvasJSON - Fabric.js canvas JSON
+ * @property {Date} created - Creation date
+ * @property {Date} lastModified - Last modification date
  */
 
 /**

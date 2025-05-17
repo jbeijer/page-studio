@@ -29,6 +29,12 @@ och projektet följer [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Stöd för dokumentmetadata (titel, skapare, datum)
 - Automatisk sparning av canvas-tillstånd
 - Avancerad JSON-serialisering av canvas-objekt med länkrelationer
+- Stöd för mallsidor (master pages) med applikation på en eller alla sidor
+- Överriding av mallsideobjekt på specifika sidor
+- UI för att hantera mallsidor via en speciell panel
+- Möjlighet att redigera mallsidor separat från dokumentsidor
+- Ångra/göra om-funktionalitet med historikhantering
+- Stöd för att ta bort objekt via Delete-tangenten eller knapp
 
 ### Changed
 - Flyttade all projektdokumentation till `/docs`-mappen
