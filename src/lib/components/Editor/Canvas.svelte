@@ -10,6 +10,14 @@
   import HorizontalRuler from './HorizontalRuler.svelte';
   import VerticalRuler from './VerticalRuler.svelte';
   import { createLayerManagementFunctions, createClipboardFunctions } from './Canvas.helpers.js';
+  import { renderGrid } from './Canvas.grid.js';
+  import { 
+    createHorizontalGuide, 
+    createVerticalGuide, 
+    makeGuideDraggable,
+    deleteGuide,
+    loadGuides
+  } from './Canvas.guides.js';
   import { loadDocument } from '$lib/utils/storage.js';
   
   // Importera grid-utils endast på klientsidan
@@ -69,7 +77,15 @@
   
   // Watch for grid changes
   $: if (canvas && $currentDocument?.metadata?.grid) {
-    renderGrid();
+    renderGrid({
+      canvas,
+      canvasElement,
+      isMounted,
+      width,
+      height,
+      currentDocument: $currentDocument,
+      convertToPixels
+    });
   }
   
   // Generate a unique ID for objects when needed
@@ -196,11 +212,19 @@
       console.log(`LOAD PHASE: loadPage() completed in ${loadDuration.toFixed(2)}ms`);
       
       // Load guides for new page
-      loadGuides();
+      refreshGuides();
       
       // Re-render grid if enabled
       if ($currentDocument?.metadata?.grid?.enabled) {
-        renderGrid();
+        renderGrid({
+          canvas,
+          canvasElement,
+          isMounted,
+          width,
+          height,
+          currentDocument: $currentDocument,
+          convertToPixels
+        });
       }
     }).catch(err => {
       console.error("LOAD PHASE ERROR: Failed to load page:", err);
@@ -353,11 +377,19 @@
     
     // Initialize grid if enabled
     if ($currentDocument?.metadata?.grid?.enabled) {
-      renderGrid();
+      renderGrid({
+        canvas,
+        canvasElement,
+        isMounted,
+        width,
+        height,
+        currentDocument: $currentDocument,
+        convertToPixels
+      });
     }
     
     // Initialize guides for current page
-    loadGuides();
+    refreshGuides();
     
     // Initialize layer management functions
     const layerFunctions = createLayerManagementFunctions(canvas, saveCurrentPage);
@@ -1299,474 +1331,8 @@
   }
   
   // Grid rendering function
-  /**
-   * FÖRBÄTTRAD CSS-BASERAD GRID RENDERING
-   * Istället för att lägga till grid-linjer på canvas, lägger vi ett CSS-grid ovanpå canvas
-   * Använder 1px rena linjer med precise positionering för att förhindra subbpixel-problem
-   */
-  function renderGrid() {
-    // Bail out early if not mounted or no canvas or server-side
-    if (!isMounted || !canvas || typeof window === 'undefined') {
-      return;
-    }
-    
-    // Ta bort eventuella överliggande grid-element
-    const existingOverlayGrid = document.getElementById('canvas-grid-overlay');
-    if (existingOverlayGrid) {
-      existingOverlayGrid.remove();
-    }
-    
-    // Ta bort de gamla grid-objekten från canvas
-    const existingGridLines = canvas.getObjects().filter(obj => obj.gridElement);
-    existingGridLines.forEach(line => canvas.remove(line));
-    
-    // Kontrollera om grid är aktiverad
-    if (!$currentDocument?.metadata?.grid?.enabled) {
-      canvas.renderAll();
-      return;
-    }
-    
-    const { size, color, opacity, subdivisions, units = 'mm' } = $currentDocument.metadata.grid;
-    
-    // Beräkna grid-storlek i pixlar - VIKTIGT: använd INTEGER pixlar
-    let gridSize;
-    if (convertToPixels) {
-      // Convert grid size from document units to pixels using our utility function
-      // Math.floor istället för Math.round för att säkerställa exakt pixelpositionering
-      gridSize = Math.max(10, Math.floor(convertToPixels(size, units)));
-    } else {
-      // Fallback conversion (same as the original)
-      const pxPerMm = 3.78; // Approximate conversion at 96 DPI
-      gridSize = Math.max(10, Math.floor(size * pxPerMm));
-    }
-    
-    // Beräkna underindelningens storlek - OCKSÅ med INTEGER pixlar
-    const subSize = Math.max(1, Math.floor(gridSize / subdivisions));
-    
-    // Hitta canvas container
-    const canvasContainer = canvasElement.parentElement;
-    if (!canvasContainer) {
-      console.error('Could not find canvas container');
-      return;
-    }
-    
-    // Säkerställ att canvas container har rätt positionering
-    canvasContainer.style.position = 'relative';
-    
-    // Skaffa exakta pixeldimensioner från canvas
-    const canvasWidth = Math.floor(width);
-    const canvasHeight = Math.floor(height);
-    
-    // Hämta exakt canvasElement position för perfekt justering
-    const canvasRect = canvasElement.getBoundingClientRect();
-    const containerRect = canvasContainer.getBoundingClientRect();
-    
-    // Beräkna offset mellan canvas och container (för pixel-perfect positionering)
-    const offsetLeft = canvasRect.left - containerRect.left;
-    const offsetTop = canvasRect.top - containerRect.top;
-    
-    // Skapa CSS för grid-överlagringen med förbättrad precision
-    // Använd translateZ(0) för att tvinga pixelsnapping i moderna webbläsare
-    const gridOverlayCSS = `
-      position: absolute;
-      top: ${Math.floor(offsetTop)}px;
-      left: ${Math.floor(offsetLeft)}px;
-      width: ${canvasWidth}px;
-      height: ${canvasHeight}px;
-      pointer-events: none;
-      z-index: 10;
-      background-color: transparent;
-      transform-origin: 0 0;
-      transform: translateZ(0);
-      image-rendering: -webkit-optimize-contrast;
-      image-rendering: crisp-edges;
-      will-change: transform;
-    `;
-    
-    // Skapa grid-överlagringselementet
-    const gridOverlay = document.createElement('div');
-    gridOverlay.id = 'canvas-grid-overlay';
-    gridOverlay.style.cssText = gridOverlayCSS;
-    
-    // Skapa SVG-baserat grid istället för CSS background
-    // SVG ger bättre kontroll över renderingen
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('width', canvasWidth);
-    svg.setAttribute('height', canvasHeight);
-    svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-    svg.style.position = 'absolute';
-    svg.style.top = '0';
-    svg.style.left = '0';
-    svg.style.width = '100%';
-    svg.style.height = '100%';
-    svg.style.overflow = 'visible';
-    svg.style.pointerEvents = 'none';
-    
-    // Lägg till en definierad pattern för huvudgrid
-    const mainPattern = document.createElementNS('http://www.w3.org/2000/svg', 'pattern');
-    mainPattern.setAttribute('id', 'mainGrid');
-    mainPattern.setAttribute('width', gridSize);
-    mainPattern.setAttribute('height', gridSize);
-    mainPattern.setAttribute('patternUnits', 'userSpaceOnUse');
-    
-    // Skapa huvudgridlinjer
-    const mainHorizLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-    mainHorizLine.setAttribute('x1', '0');
-    mainHorizLine.setAttribute('y1', '0');
-    mainHorizLine.setAttribute('x2', gridSize);
-    mainHorizLine.setAttribute('y2', '0');
-    mainHorizLine.setAttribute('stroke', color);
-    mainHorizLine.setAttribute('stroke-width', '1');
-    mainHorizLine.setAttribute('stroke-opacity', opacity);
-    mainPattern.appendChild(mainHorizLine);
-    
-    const mainVertLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-    mainVertLine.setAttribute('x1', '0');
-    mainVertLine.setAttribute('y1', '0');
-    mainVertLine.setAttribute('x2', '0');
-    mainVertLine.setAttribute('y2', gridSize);
-    mainVertLine.setAttribute('stroke', color);
-    mainVertLine.setAttribute('stroke-width', '1');
-    mainVertLine.setAttribute('stroke-opacity', opacity);
-    mainPattern.appendChild(mainVertLine);
-    
-    svg.appendChild(mainPattern);
-    
-    // Lägg till en definierad pattern för undergrid om tillämpligt
-    if (subdivisions > 1 && subSize > 1) {
-      const subPattern = document.createElementNS('http://www.w3.org/2000/svg', 'pattern');
-      subPattern.setAttribute('id', 'subGrid');
-      subPattern.setAttribute('width', subSize);
-      subPattern.setAttribute('height', subSize);
-      subPattern.setAttribute('patternUnits', 'userSpaceOnUse');
-      
-      // Skapa undergridlinjer med lägre opacitet
-      const subHorizLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-      subHorizLine.setAttribute('x1', '0');
-      subHorizLine.setAttribute('y1', '0');
-      subHorizLine.setAttribute('x2', subSize);
-      subHorizLine.setAttribute('y2', '0');
-      subHorizLine.setAttribute('stroke', color);
-      subHorizLine.setAttribute('stroke-width', '1');
-      subHorizLine.setAttribute('stroke-opacity', opacity * 0.5);
-      subPattern.appendChild(subHorizLine);
-      
-      const subVertLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-      subVertLine.setAttribute('x1', '0');
-      subVertLine.setAttribute('y1', '0');
-      subVertLine.setAttribute('x2', '0');
-      subVertLine.setAttribute('y2', subSize);
-      subVertLine.setAttribute('stroke', color);
-      subVertLine.setAttribute('stroke-width', '1');
-      subVertLine.setAttribute('stroke-opacity', opacity * 0.5);
-      subPattern.appendChild(subVertLine);
-      
-      svg.appendChild(subPattern);
-      
-      // Lägg till en rektangel för undergrid
-      const subRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-      subRect.setAttribute('width', '100%');
-      subRect.setAttribute('height', '100%');
-      subRect.setAttribute('fill', 'url(#subGrid)');
-      svg.appendChild(subRect);
-    }
-    
-    // Lägg till en rektangel för huvudgrid
-    const mainRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    mainRect.setAttribute('width', '100%');
-    mainRect.setAttribute('height', '100%');
-    mainRect.setAttribute('fill', 'url(#mainGrid)');
-    svg.appendChild(mainRect);
-    
-    // Lägg till SVG till gridet
-    gridOverlay.appendChild(svg);
-    
-    // Lägg till grid-överlagringen i canvas container
-    canvasContainer.appendChild(gridOverlay);
-    
-    // För debugging - lägg till en synlig ram runt canvas och grid
-    // för att se om de är korrekt justerade
-    if (window.DEBUG_GRID_ALIGNMENT) {
-      gridOverlay.style.border = '1px solid red';
-      canvasElement.style.border = '1px solid blue';
-      console.log('Canvas rect:', canvasRect);
-      console.log('Container rect:', containerRect);
-      console.log('Grid overlay CSS:', gridOverlayCSS);
-    }
-    
-    // Rendera canvas för att se till att allt visas korrekt
-    canvas.renderAll();
-  }
+  // Grid rendering implementerad i Canvas.grid.js
   
-  // Guide creation and management functions
-  function createHorizontalGuide(position) {
-    if (!canvas || !$currentDocument || !$currentPage) return;
-    
-    // Create the guide line on the canvas
-    const guide = new fabric.Line([0, position, width, position], {
-      stroke: '#0066CC',
-      strokeWidth: 1,
-      strokeDashArray: [5, 5],
-      selectable: false,
-      evented: true,
-      guide: true,
-      horizontal: true,
-      excludeFromExport: true,
-      originalPosition: position // Store original position for updating
-    });
-    
-    // Add guide to canvas
-    canvas.add(guide);
-    
-    // Save guide position to document
-    currentDocument.update(doc => {
-      const pageIndex = doc.pages.findIndex(p => p.id === $currentPage);
-      if (pageIndex >= 0) {
-        const updatedPages = [...doc.pages];
-        
-        // Initialize guides array if it doesn't exist
-        if (!updatedPages[pageIndex].guides) {
-          updatedPages[pageIndex].guides = { horizontal: [], vertical: [] };
-        }
-        
-        // Add new guide position
-        updatedPages[pageIndex].guides.horizontal.push(position);
-        
-        return {
-          ...doc,
-          pages: updatedPages,
-          lastModified: new Date()
-        };
-      }
-      return doc;
-    });
-    
-    // Add drag behavior
-    makeGuideDraggable(guide);
-    
-    return guide;
-  }
-  
-  function createVerticalGuide(position) {
-    if (!canvas || !$currentDocument || !$currentPage) return;
-    
-    // Create the guide line on the canvas
-    const guide = new fabric.Line([position, 0, position, height], {
-      stroke: '#0066CC',
-      strokeWidth: 1,
-      strokeDashArray: [5, 5],
-      selectable: false,
-      evented: true,
-      guide: true,
-      horizontal: false,
-      excludeFromExport: true,
-      originalPosition: position // Store original position for updating
-    });
-    
-    // Add guide to canvas
-    canvas.add(guide);
-    
-    // Save guide position to document
-    currentDocument.update(doc => {
-      const pageIndex = doc.pages.findIndex(p => p.id === $currentPage);
-      if (pageIndex >= 0) {
-        const updatedPages = [...doc.pages];
-        
-        // Initialize guides array if it doesn't exist
-        if (!updatedPages[pageIndex].guides) {
-          updatedPages[pageIndex].guides = { horizontal: [], vertical: [] };
-        }
-        
-        // Add new guide position
-        updatedPages[pageIndex].guides.vertical.push(position);
-        
-        return {
-          ...doc,
-          pages: updatedPages,
-          lastModified: new Date()
-        };
-      }
-      return doc;
-    });
-    
-    // Add drag behavior
-    makeGuideDraggable(guide);
-    
-    return guide;
-  }
-  
-  // Make guides draggable
-  function makeGuideDraggable(guide) {
-    guide.on('mousedown', function(e) {
-      // Skip if it's a right-click
-      if (e.e.button === 2) return;
-      
-      e.e.stopPropagation();
-      
-      const isHorizontal = guide.horizontal;
-      
-      // Set up move handler
-      const moveHandler = function(moveEvent) {
-        const pointer = canvas.getPointer(moveEvent.e);
-        
-        if (isHorizontal) {
-          guide.set({ y1: pointer.y, y2: pointer.y });
-        } else {
-          guide.set({ x1: pointer.x, x2: pointer.x });
-        }
-        
-        canvas.renderAll();
-      };
-      
-      // Set up mouseup handler
-      const upHandler = function() {
-        canvas.off('mouse:move', moveHandler);
-        canvas.off('mouse:up', upHandler);
-        
-        // Update guide position in document
-        const newPos = isHorizontal ? guide.y1 : guide.x1;
-        updateGuidePosition(guide, newPos);
-      };
-      
-      // Add event listeners
-      canvas.on('mouse:move', moveHandler);
-      canvas.on('mouse:up', upHandler);
-    });
-  }
-  
-  // Update guide position in document
-  function updateGuidePosition(guide, newPosition) {
-    if (!$currentDocument || !$currentPage) return;
-    
-    const isHorizontal = guide.horizontal;
-    const oldPosition = guide.originalPosition;
-    
-    currentDocument.update(doc => {
-      const pageIndex = doc.pages.findIndex(p => p.id === $currentPage);
-      if (pageIndex >= 0) {
-        const updatedPages = [...doc.pages];
-        const guides = updatedPages[pageIndex].guides;
-        
-        if (!guides) return doc;
-        
-        // Find and update the guide position
-        const guideArray = isHorizontal ? guides.horizontal : guides.vertical;
-        const guideIndex = guideArray.indexOf(oldPosition);
-        
-        if (guideIndex >= 0) {
-          guideArray[guideIndex] = newPosition;
-          guide.originalPosition = newPosition;
-        }
-        
-        return {
-          ...doc,
-          pages: updatedPages,
-          lastModified: new Date()
-        };
-      }
-      return doc;
-    });
-  }
-  
-  // Delete a guide
-  function deleteGuide(index, isHorizontal) {
-    if (!canvas || !$currentDocument || !$currentPage) return;
-    
-    // Remove from document first
-    currentDocument.update(doc => {
-      const pageIndex = doc.pages.findIndex(p => p.id === $currentPage);
-      if (pageIndex >= 0) {
-        const updatedPages = [...doc.pages];
-        const guides = updatedPages[pageIndex].guides;
-        
-        if (!guides) return doc;
-        
-        // Get the guide array and position
-        const guideArray = isHorizontal ? guides.horizontal : guides.vertical;
-        
-        if (index >= 0 && index < guideArray.length) {
-          // Remove the guide position
-          guideArray.splice(index, 1);
-          
-          // Now remove from canvas
-          const guidesToRemove = canvas.getObjects().filter(obj => 
-            obj.guide && obj.horizontal === isHorizontal
-          );
-          
-          if (index < guidesToRemove.length) {
-            canvas.remove(guidesToRemove[index]);
-          }
-        }
-        
-        return {
-          ...doc,
-          pages: updatedPages,
-          lastModified: new Date()
-        };
-      }
-      return doc;
-    });
-  }
-  
-  // Load guides for current page
-  function loadGuides() {
-    if (!canvas || !$currentDocument || !$currentPage) return;
-    
-    // Clear existing guides
-    const existingGuides = canvas.getObjects().filter(obj => obj.guide);
-    existingGuides.forEach(guide => canvas.remove(guide));
-    
-    // Find current page
-    const currentPageObj = $currentDocument.pages.find(p => p.id === $currentPage);
-    if (!currentPageObj || !currentPageObj.guides) return;
-    
-    // Create horizontal guides
-    if (currentPageObj.guides.horizontal && Array.isArray(currentPageObj.guides.horizontal)) {
-      currentPageObj.guides.horizontal.forEach(yPos => {
-        createHorizontalGuide(yPos);
-      });
-    }
-    
-    // Create vertical guides
-    if (currentPageObj.guides.vertical && Array.isArray(currentPageObj.guides.vertical)) {
-      currentPageObj.guides.vertical.forEach(xPos => {
-        createVerticalGuide(xPos);
-      });
-    }
-  }
-  
-  // Handler for ruler events
-  function handleCreateGuide(event) {
-    const { position, isHorizontal } = event.detail;
-    if (isHorizontal) {
-      createHorizontalGuide(position);
-    } else {
-      createVerticalGuide(position);
-    }
-  }
-  
-  function handleUpdateGuide(event) {
-    // This would be used for live updating during drag
-    // Implementation depends on how you want to handle visual updates
-  }
-  
-  function handleDeleteGuide(event) {
-    const { index, isHorizontal } = event.detail;
-    deleteGuide(index, isHorizontal);
-  }
-  
-  /**
-   * Handle double-click events on canvas objects
-   * @param {Object} options - Fabric.js mouse event options
-   */
-  function handleDoubleClick(options) {
-    if (options.target && options.target.fromMaster && options.target.overridable) {
-      // Double-click on an overridable master page object - auto-override it
-      overrideMasterObject(options.target);
-    }
-  }
-  
-  /**
    * Handle context menu override action
    * @param {Object} event - Event object containing the target object
    */
