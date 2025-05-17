@@ -383,7 +383,7 @@
   };
 
   // Subscribe to current page changes
-  $: if ($currentPage && canvas && $currentPage !== previousPage) {
+  $: if ($currentPage && canvas && $currentDocument && $currentPage !== previousPage) {
     console.log(`+==========================================+`);
     console.log(`| PAGE SWITCH: ${previousPage || 'null'} -> ${$currentPage} |`);
     console.log(`+==========================================+`);
@@ -479,6 +479,13 @@
       console.log(`LOAD PHASE: loadPage() completed in ${loadDuration.toFixed(2)}ms`);
     }).catch(err => {
       console.error("LOAD PHASE ERROR: Failed to load page:", err);
+      
+      // Fallback to a clean canvas if loading fails
+      if (canvas) {
+        canvas.clear();
+        canvas.backgroundColor = 'white';
+        canvas.renderAll();
+      }
     });
     
     // Force render cycles with a single delay
@@ -646,11 +653,11 @@
     
     // Create a derived store to update context when store values change
     $: {
-      if (context && context.update && $currentDocument && $currentPage) {
+      if (context && context.update) {
         console.log("Canvas.svelte: Updating context with new document/page data");
         context.update({
-          currentDocument: $currentDocument,
-          currentPage: $currentPage,
+          currentDocument: $currentDocument || null,
+          currentPage: $currentPage || null,
           activeTool: $activeTool,
           currentToolOptions: $currentToolOptions
         });

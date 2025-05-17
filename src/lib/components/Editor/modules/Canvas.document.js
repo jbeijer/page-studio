@@ -342,16 +342,21 @@ export function createDocumentManagement(context) {
         const canvas = context.canvas;
         const doc = context.get ? context.get('currentDocument') : context.currentDocument;
         
-        // During initialization, we might not have a document yet - this is normal
-        // Only log error if we're not in the initial loading state
-        if (!canvas || (!doc && pageId !== 'loading-page')) {
-          console.error("LOAD ERROR: Canvas or document not available", {
-            hasCanvas: !!canvas,
-            hasDoc: !!doc,
-            pageId,
-            context: context
-          });
-          return reject(new Error("Canvas or document not available"));
+        // During initialization, we might not have a document or canvas yet - this is normal
+        // Handle this gracefully instead of throwing an error
+        if (!canvas) {
+          console.warn("LOAD WARNING: Canvas is not available, creating blank canvas");
+          // Just resolve with a success status since we can't do much without a canvas
+          return resolve(true);
+        }
+        
+        if (!doc) {
+          console.warn("LOAD WARNING: Document is not available, creating blank canvas");
+          // Clear canvas and set background to white
+          canvas.clear();
+          canvas.backgroundColor = 'white';
+          canvas.renderAll();
+          return resolve(true);
         }
         
         // Special handling for temporary loading page
