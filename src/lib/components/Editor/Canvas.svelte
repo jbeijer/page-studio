@@ -388,6 +388,14 @@
     console.log(`| PAGE SWITCH: ${previousPage || 'null'} -> ${$currentPage} |`);
     console.log(`+==========================================+`);
     
+    // Store current page ID in the canvas object for direct reference
+    canvas.pageId = $currentPage;
+    
+    // Store global references for recovery
+    window.$page = $currentPage;
+    window.$document = $currentDocument;
+    window.$updateDocument = currentDocument.update;
+    
     console.log(`Canvas state before page switch:`, {
       hasCanvas: !!canvas,
       objectCount: canvas ? canvas.getObjects().length : 0,

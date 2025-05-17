@@ -29,8 +29,17 @@ export function createDocumentManagement(context) {
   function saveCurrentPage() {
     // Get current values from context to ensure we're using the latest data
     const canvas = context.canvas;
-    const doc = context.get ? context.get('currentDocument') : context.currentDocument;
-    const pageId = context.get ? context.get('currentPage') : context.currentPage;
+    let doc = context.get ? context.get('currentDocument') : context.currentDocument;
+    let pageId = context.get ? context.get('currentPage') : context.currentPage;
+    
+    // Use null coalescing to handle possible Svelte store objects
+    if (doc && typeof doc.subscribe === 'function' && doc.$state) {
+      doc = doc.$state;
+    }
+    
+    if (pageId && typeof pageId.subscribe === 'function' && pageId.$state) {
+      pageId = pageId.$state;
+    }
     
     if (!canvas) {
       console.warn("Cannot save page: Canvas is not initialized");
@@ -38,13 +47,28 @@ export function createDocumentManagement(context) {
     }
     
     if (!pageId) {
-      console.warn("Cannot save page: No current page");
-      return false;
+      // Try to get the page ID from any source we can
+      if (canvas.pageId) {
+        pageId = canvas.pageId;
+        console.log("Using canvas.pageId value:", pageId);
+      } else if (window.$page) {
+        pageId = window.$page;
+        console.log("Using window.$page value:", pageId);
+      } else {
+        console.warn("Cannot save page: No current page");
+        return false;
+      }
     }
     
     if (!doc) {
-      console.warn("Cannot save page: No current document");
-      return false;
+      // Try to get the document from any source we can
+      if (window.$document) {
+        doc = window.$document;
+        console.log("Using window.$document value:", doc);
+      } else {
+        console.warn("Cannot save page: No current document");
+        return false;
+      }
     }
     
     // Get the index of the page to save
@@ -231,17 +255,39 @@ export function createDocumentManagement(context) {
       return false;
     }
     
-    if (!currentDocument) {
-      console.warn(`Cannot save specific page ${pageId}: No current document`);
-      return false;
+    // Get the latest document value 
+    let doc = context.get ? context.get('currentDocument') : context.currentDocument;
+    
+    // Handle Svelte store objects
+    if (doc && typeof doc.subscribe === 'function' && doc.$state) {
+      doc = doc.$state;
+    } else if (!doc) {
+      doc = currentDocument;
     }
     
+    if (!doc) {
+      // Try to get the document from any available source
+      if (window.$document) {
+        doc = window.$document;
+        console.log("Using window.$document value:", doc);
+      } else {
+        console.warn(`Cannot save specific page ${pageId}: No current document`);
+        return false;
+      }
+    }
+    
+    // Store this reference for window-level access later
+    window.$document = doc;
+    
     // Get the index of the page to save
-    let pageIndexToSave = currentDocument.pages.findIndex(p => p.id === pageId);
+    let pageIndexToSave = doc.pages.findIndex(p => p.id === pageId);
     if (pageIndexToSave < 0) {
       console.warn(`Cannot save specific page ${pageId}: Page not found in document`);
       return false;
     }
+    
+    // Store this page ID for window-level access later
+    window.$page = pageId;
     
     try {
       console.log(`Saving specific page ${pageId} directly with ${objects.length} objects`);
@@ -255,7 +301,7 @@ export function createDocumentManagement(context) {
         });
         
         // Update document with empty canvas
-        const updatedPages = [...currentDocument.pages];
+        const updatedPages = [...doc.pages];
         updatedPages[pageIndexToSave] = {
           ...updatedPages[pageIndexToSave],
           canvasJSON: emptyCanvasJSON,
@@ -263,12 +309,21 @@ export function createDocumentManagement(context) {
           overrides: updatedPages[pageIndexToSave].overrides || {}
         };
         
-        // Update the store
-        context.currentDocument.update(doc => ({
-          ...doc,
-          pages: updatedPages,
-          lastModified: new Date()
-        }));
+        // Update the store - gracefully handle if there's no update function
+        if (context.currentDocument && typeof context.currentDocument.update === 'function') {
+          context.currentDocument.update(docToUpdate => ({
+            ...docToUpdate,
+            pages: updatedPages,
+            lastModified: new Date()
+          }));
+        } else if (window.$updateDocument) {
+          // Use alternative update mechanism if available
+          window.$updateDocument(doc => ({
+            ...doc,
+            pages: updatedPages,
+            lastModified: new Date()
+          }));
+        }
         
         console.log(`Saved empty page ${pageId}`);
         return true;
@@ -306,7 +361,7 @@ export function createDocumentManagement(context) {
       console.log(`Serialized JSON for page ${pageId}: ${canvasJSON.length} characters`);
       
       // Create updated page object
-      const updatedPages = [...currentDocument.pages];
+      const updatedPages = [...doc.pages];
       updatedPages[pageIndexToSave] = {
         ...updatedPages[pageIndexToSave],
         canvasJSON: canvasJSON,
@@ -314,12 +369,28 @@ export function createDocumentManagement(context) {
         overrides: updatedPages[pageIndexToSave].overrides || {}
       };
       
-      // Update the store
-      context.currentDocument.update(doc => ({
-        ...doc,
-        pages: updatedPages,
-        lastModified: new Date()
-      }));
+      // Update the store - handle possibly missing update function
+      if (context.currentDocument && typeof context.currentDocument.update === 'function') {
+        context.currentDocument.update(docToUpdate => ({
+          ...docToUpdate,
+          pages: updatedPages,
+          lastModified: new Date()
+        }));
+      } else if (window.$updateDocument) {
+        // Use alternative update mechanism if available
+        window.$updateDocument(doc => ({
+          ...doc,
+          pages: updatedPages,
+          lastModified: new Date()
+        }));
+      } else {
+        // Direct update fallback - if update function isn't available, store reference
+        window.$document = {
+          ...doc,
+          pages: updatedPages,
+          lastModified: new Date()
+        };
+      }
       
       console.log(`Page ${pageId} saved successfully with ${objects.length} objects`);
       return true;
