@@ -6,7 +6,7 @@ import { activeTool, ToolType, setActiveTool } from '$lib/stores/toolbar';
 
 // Mock fabric
 vi.mock('fabric', () => {
-  return {
+  const fabricMock = {
     fabric: {
       Canvas: vi.fn().mockImplementation(() => ({
         add: vi.fn(),
@@ -15,6 +15,7 @@ vi.mock('fabric', () => {
         toJSON: vi.fn(),
         clear: vi.fn(),
         renderAll: vi.fn(),
+        requestRenderAll: vi.fn(),
         dispose: vi.fn(),
         on: vi.fn(),
         off: vi.fn(),
@@ -26,38 +27,86 @@ vi.mock('fabric', () => {
         sendBackward: vi.fn(),
         bringToFront: vi.fn(),
         sendToBack: vi.fn(),
+        discardActiveObject: vi.fn(),
         defaultCursor: 'default',
         selection: true,
-        isDrawingMode: false
+        isDrawingMode: false,
+        backgroundColor: 'white'
       })),
       Rect: vi.fn().mockImplementation(() => ({
         set: vi.fn(),
-        setCoords: vi.fn()
+        setCoords: vi.fn(),
+        type: 'rect'
       })),
       Ellipse: vi.fn().mockImplementation(() => ({
         set: vi.fn(),
-        setCoords: vi.fn()
+        setCoords: vi.fn(),
+        type: 'ellipse'
       })),
       Line: vi.fn().mockImplementation(() => ({
         set: vi.fn(),
-        setCoords: vi.fn()
+        setCoords: vi.fn(),
+        type: 'line'
       })),
       Textbox: vi.fn().mockImplementation(() => ({
         set: vi.fn(),
         setCoords: vi.fn(),
-        enterEditing: vi.fn()
+        enterEditing: vi.fn(),
+        type: 'textbox',
+        on: vi.fn()
+      })),
+      Text: vi.fn().mockImplementation(() => ({
+        set: vi.fn(),
+        setCoords: vi.fn(),
+        type: 'text'
       })),
       Image: {
         fromURL: vi.fn().mockImplementation((url, callback) => {
           const mockImage = {
             set: vi.fn(),
             setCoords: vi.fn(),
-            setControlsVisibility: vi.fn()
+            setControlsVisibility: vi.fn(),
+            type: 'image',
+            visible: true,
+            opacity: 1
           };
           callback(mockImage);
         })
-      }
+      },
+      ActiveSelection: vi.fn().mockImplementation(() => ({
+        getObjects: vi.fn().mockReturnValue([]),
+        set: vi.fn(),
+        type: 'activeSelection'
+      })),
+      util: {
+        enlivenObjects: vi.fn().mockImplementation((objects, callback) => {
+          const mockObjects = objects.map(obj => ({
+            ...obj,
+            toJSON: vi.fn().mockReturnValue(obj),
+            on: vi.fn(),
+            set: vi.fn(),
+            get: vi.fn(),
+            visible: true,
+            evented: true,
+            selectable: true
+          }));
+          callback(mockObjects);
+        }),
+        object: {
+          clone: vi.fn().mockImplementation(obj => ({
+            ...obj,
+            toJSON: vi.fn().mockReturnValue(obj),
+            set: vi.fn()
+          }))
+        }
+      },
+      version: '5.0.0'
     }
+  };
+  // Export both the object and destructured version for different import styles
+  return {
+    ...fabricMock,
+    default: fabricMock
   };
 });
 

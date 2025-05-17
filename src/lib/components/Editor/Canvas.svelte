@@ -7,7 +7,21 @@
   import TextFlow from '$lib/utils/text-flow';
   import HistoryManager from '$lib/utils/history-manager';
   import MasterObjectContextMenu from './MasterObjectContextMenu.svelte';
+  import HorizontalRuler from './HorizontalRuler.svelte';
+  import VerticalRuler from './VerticalRuler.svelte';
   import { createLayerManagementFunctions, createClipboardFunctions } from './Canvas.helpers.js';
+  import { loadDocument } from '$lib/utils/storage.js';
+  
+  // Importera grid-utils endast på klientsidan
+  let convertToPixels;
+  let snapToGridPoint;
+  
+  if (typeof window !== 'undefined') {
+    import('$lib/utils/grid-utils.js').then(module => {
+      convertToPixels = module.convertToPixels;
+      snapToGridPoint = module.snapToGrid;
+    });
+  }
   
   const dispatch = createEventDispatcher();
   
@@ -24,6 +38,9 @@
   let textFlow;
   let historyManager;
   
+  // Debug flag - sätt till true för att aktivera debugging av grid-justeringen
+  window.DEBUG_GRID_ALIGNMENT = false;
+  
   // History state
   let canUndo = false;
   let canRedo = false;
@@ -34,6 +51,27 @@
   let contextMenuY = 0;
   let contextMenuObject = null;
   
+  // Grid and rulers state
+  let canvasScrollX = 0;
+  let canvasScrollY = 0;
+  let canvasContainer;
+  let zoomLevel = 1;
+  
+  // Show/hide rulers based on document settings
+  $: showRulers = $currentDocument?.metadata?.rulers?.enabled || false;
+  $: showHorizontalRuler = showRulers && ($currentDocument?.metadata?.rulers?.horizontalVisible || true);
+  $: showVerticalRuler = showRulers && ($currentDocument?.metadata?.rulers?.verticalVisible || true);
+  
+  // Calculate ruler positions
+  $: rulerWidth = width;
+  $: rulerHeight = height;
+  $: rulerOffset = 20; // Width/height of the rulers
+  
+  // Watch for grid changes
+  $: if (canvas && $currentDocument?.metadata?.grid) {
+    renderGrid();
+  }
+  
   // Generate a unique ID for objects when needed
   function generateId() {
     return 'obj-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
@@ -42,107 +80,176 @@
   // Keep track of the previous page to avoid redundant operations
   let previousPage = null;
   
+  /**
+   * Direct function to load document from IndexedDB
+   * Bypasses the store to ensure we have the latest data
+   * @param {string} documentId - Document ID to load
+   * @returns {Promise<Object>} The document from IndexedDB
+   */
+  async function loadDocumentFromIndexedDB(documentId) {
+    console.log(`Direct DB load for document: ${documentId}`);
+    try {
+      // Use the storage utility to load the document directly from IndexedDB
+      const document = await loadDocument(documentId);
+      console.log(`Successfully loaded document directly from IndexedDB: ${documentId}`);
+      return document;
+    } catch (err) {
+      console.error(`Failed to load document directly from IndexedDB: ${documentId}`, err);
+      return null;
+    }
+  }
+  
   // Subscribe to current page changes
   $: if ($currentPage && canvas && $currentPage !== previousPage) {
-    console.log(`Page changed from ${previousPage} to ${$currentPage}`);
+    console.log(`+==========================================+`);
+    console.log(`| PAGE SWITCH: ${previousPage || 'null'} -> ${$currentPage} |`);
+    console.log(`+==========================================+`);
+    
+    console.log(`Canvas state before page switch:`, {
+      hasCanvas: !!canvas,
+      objectCount: canvas ? canvas.getObjects().length : 0,
+      previousPageId: previousPage,
+      newPageId: $currentPage,
+      documentId: $currentDocument ? $currentDocument.id : 'null', 
+      pageCount: $currentDocument ? $currentDocument.pages.length : 0
+    });
     
     // Only save the previous page if we had one
     if (previousPage) {
-      console.log(`Saving previous page ${previousPage} before switching`);
+      console.log(`SAVE PHASE: Saving previous page ${previousPage} before switching`);
       
       // Save the current page to the correct previous page ID
       const pageToSaveIndex = $currentDocument.pages.findIndex(p => p.id === previousPage);
+      
+      console.log(`Page index in document: ${pageToSaveIndex}`);
+      
       if (pageToSaveIndex >= 0) {
         // Force save of current page with additional verification
         const currentObjects = canvas.getObjects();
-        console.log(`Currently ${currentObjects.length} objects on canvas before saving page ${previousPage}`);
+        console.log(`SAVE PHASE: Currently ${currentObjects.length} objects on canvas before saving page ${previousPage}`);
+        
         if (currentObjects.length > 0) {
-          console.log(`Object types: ${currentObjects.map(obj => obj.type).join(', ')}`);
+          // Log each object on the canvas for detailed debugging
+          console.log(`SAVE PHASE: Object details:`);
+          currentObjects.forEach((obj, idx) => {
+            console.log(`  Object #${idx}:`, {
+              type: obj.type,
+              id: obj.id || 'no-id',
+              visible: obj.visible,
+              left: Math.round(obj.left),
+              top: Math.round(obj.top),
+              width: Math.round(obj.width || 0),
+              height: Math.round(obj.height || 0),
+              text: obj.type === 'textbox' ? obj.text.substring(0, 20) + (obj.text.length > 20 ? '...' : '') : null
+            });
+          });
         }
         
         try {
-          // Directly create an updated page object for the current canvas
-          if (currentObjects.length > 0) {
-            // Create a JSON representation of the canvas
-            const canvasData = canvas.toJSON([
-              'id', 'linkedObjectIds', 'fromMaster', 'masterId', 'masterObjectId', 'overridable'
-            ]);
-            
-            console.log(`Saving ${currentObjects.length} objects to page ${previousPage}`);
-            const canvasJSON = JSON.stringify(canvasData);
-            
-            // Update the document with this specific page's data
-            currentDocument.update(doc => {
-              const updatedPages = [...doc.pages];
-              updatedPages[pageToSaveIndex] = {
-                ...updatedPages[pageToSaveIndex],
-                canvasJSON: canvasJSON
-              };
-              
-              return {
-                ...doc,
-                pages: updatedPages,
-                lastModified: new Date()
-              };
-            });
-            
-            console.log(`Directly saved page ${previousPage} with ${currentObjects.length} objects`);
-          } else {
-            console.log(`No objects to save for page ${previousPage}`);
-            
-            // Save empty page
-            const emptyCanvasJSON = JSON.stringify({
-              "version": "4.6.0",
-              "objects": [],
-              "background": "white"
-            });
-            
-            // Update empty page in document
-            currentDocument.update(doc => {
-              const updatedPages = [...doc.pages];
-              updatedPages[pageToSaveIndex] = {
-                ...updatedPages[pageToSaveIndex],
-                canvasJSON: emptyCanvasJSON
-              };
-              
-              return {
-                ...doc,
-                pages: updatedPages,
-                lastModified: new Date()
-              };
-            });
-            
-            console.log(`Saved empty state for page ${previousPage}`);
-          }
+          // Use a dedicated function to save a specific page
+          console.log(`SAVE PHASE: Calling saveSpecificPage for ${previousPage}`);
+          saveSpecificPage(previousPage, canvas.getObjects());
+          
+          console.log(`SAVE PHASE: Successfully saved page ${previousPage} with ${currentObjects.length} objects`);
         } catch (err) {
-          console.error(`Error saving page ${previousPage}:`, err);
+          console.error(`SAVE PHASE: Error saving page ${previousPage}:`, err);
         }
       } else {
-        console.error(`Could not find page ${previousPage} in document to save`);
+        console.error(`SAVE PHASE ERROR: Could not find page ${previousPage} in document to save`);
       }
       
       // Add a forced save to document store to ensure persistence
-      console.log("Forcing document save to ensure data persistence");
+      console.log("SAVE PHASE: Forcing document save to ensure data persistence");
       currentDocument.update(doc => {
         return { ...doc, lastModified: new Date() };
       });
     }
     
-    // Wait a moment to ensure save is complete before loading new page
+      console.log("TRANSITION PHASE: Starting page switching sequence");
+    
+    // Update tracking variables
+    console.log("TRANSITION PHASE: Updating tracking variables");
+    const oldPage = previousPage;
+    previousPage = $currentPage;
+    
+    // Clear the canvas to prepare for new page
+    console.log("TRANSITION PHASE: Clearing canvas");
+    canvas.clear();
+    canvas.backgroundColor = 'white';
+    canvas.renderAll();
+    
+    // Verify canvas is truly cleared
+    const objectsAfterClear = canvas.getObjects();
+    console.log(`TRANSITION PHASE: Canvas after clear has ${objectsAfterClear.length} objects`);
+    
+    // Load the new page directly using our radical approach
+    console.log(`+-------------------------------------+`);
+    console.log(`| LOAD PHASE: Loading page ${$currentPage} |`);
+    console.log(`+-------------------------------------+`);
+    console.log(`LOAD PHASE: Calling loadPage() with shouldSaveFirst=false`);
+    
+    // Track loading time for debugging
+    const loadStartTime = performance.now();
+    
+    loadPage($currentPage, false).then(() => {
+      const loadDuration = performance.now() - loadStartTime;
+      console.log(`LOAD PHASE: loadPage() completed in ${loadDuration.toFixed(2)}ms`);
+      
+      // Load guides for new page
+      loadGuides();
+      
+      // Re-render grid if enabled
+      if ($currentDocument?.metadata?.grid?.enabled) {
+        renderGrid();
+      }
+    }).catch(err => {
+      console.error("LOAD PHASE ERROR: Failed to load page:", err);
+    });
+    
+    // Force render cycles with a single delay
     setTimeout(() => {
-      // Update our tracking variable before loading the new page
-      const oldPage = previousPage;
-      previousPage = $currentPage;
+      console.log("FINAL PHASE: Final visibility check");
       
-      // Clear the canvas before loading the new page
-      canvas.clear();
-      canvas.backgroundColor = 'white';
-      canvas.renderAll();
-      
-      // Now load the new page (without calling saveCurrentPage again)
-      console.log(`Loading new page: ${$currentPage} (after saving ${oldPage})`);
-      loadPage($currentPage, false); // Pass false to avoid saving again
-    }, 100);
+      if (canvas) {
+        // Force rerender all objects
+        const objects = canvas.getObjects();
+        console.log(`FINAL PHASE: Found ${objects.length} objects for final check`);
+        
+        if (objects.length > 0) {
+          console.log(`FINAL PHASE: Object details for verification:`);
+          objects.forEach((obj, idx) => {
+            console.log(`  Object #${idx}:`, {
+              type: obj.type,
+              id: obj.id || 'no-id',
+              visible: obj.visible,
+              opacity: obj.opacity,
+              left: Math.round(obj.left),
+              top: Math.round(obj.top),
+              width: Math.round(obj.width || 0),
+              height: Math.round(obj.height || 0),
+              text: obj.type === 'textbox' ? obj.text.substring(0, 20) + (obj.text.length > 20 ? '...' : '') : null
+            });
+            
+            // Explicitly make all objects visible
+            obj.visible = true;
+            obj.opacity = obj.opacity === 0 ? 1 : obj.opacity;
+            obj.evented = true;
+            obj.selectable = $activeTool === ToolType.SELECT;
+          });
+        }
+        
+        // Force render
+        console.log("FINAL PHASE: Forcing final render");
+        canvas.requestRenderAll();
+        canvas.renderAll();
+        
+        // Log final state
+        const finalObjects = canvas.getObjects();
+        console.log(`+-----------------------------------------------+`);
+        console.log(`| PAGE SWITCH COMPLETE: ${finalObjects.length} objects on canvas |`);
+        console.log(`+-----------------------------------------------+`);
+      }
+    }, 500);
   }
   
   // Handle active tool changes
@@ -163,7 +270,11 @@
     canvas.on('selection:cleared', handleSelectionCleared);
   }
   
+  // SSR-säker mount
+  let isMounted = false;
+  
   onMount(() => {
+    isMounted = true;
     // Initialize Fabric.js canvas with the given dimensions
     canvas = new fabric.Canvas(canvasElement, {
       width,
@@ -179,7 +290,11 @@
         id: 'page-1', 
         canvasJSON: null,
         masterPageId: null,
-        overrides: {}
+        overrides: {},
+        guides: {
+          horizontal: [],
+          vertical: []
+        }
       }];
       
       // Set first page as active
@@ -232,6 +347,17 @@
         document.dispatchEvent(historyEvent);
       }
     });
+    
+    // Set up snapping functionality
+    setupSnapping();
+    
+    // Initialize grid if enabled
+    if ($currentDocument?.metadata?.grid?.enabled) {
+      renderGrid();
+    }
+    
+    // Initialize guides for current page
+    loadGuides();
     
     // Initialize layer management functions
     const layerFunctions = createLayerManagementFunctions(canvas, saveCurrentPage);
@@ -317,359 +443,189 @@
   });
   
   function loadPage(pageId, shouldSaveFirst = true) {
-    if (!canvas || !$currentDocument) return;
-    
-    console.log(`loadPage called for page: ${pageId} (shouldSaveFirst: ${shouldSaveFirst})`);
-    
-    // Save current page first (only if requested and we have a current page)
-    if (shouldSaveFirst && $currentPage) {
-      console.log(`Saving current page ${$currentPage} before loading ${pageId}`);
-      
-      // Use our manual save method to ensure correct page is updated
-      const pageToSaveIndex = $currentDocument.pages.findIndex(p => p.id === $currentPage);
-      if (pageToSaveIndex >= 0) {
-        const currentObjects = canvas.getObjects();
-        if (currentObjects.length > 0) {
-          // Create a JSON representation of the canvas
-          const canvasData = canvas.toJSON([
-            'id', 'linkedObjectIds', 'fromMaster', 'masterId', 'masterObjectId', 'overridable'
-          ]);
-          
-          console.log(`Saving ${currentObjects.length} objects to page ${$currentPage}`);
-          const canvasJSON = JSON.stringify(canvasData);
-          
-          // Update the document with this specific page's data
-          currentDocument.update(doc => {
-            const updatedPages = [...doc.pages];
-            updatedPages[pageToSaveIndex] = {
-              ...updatedPages[pageToSaveIndex],
-              canvasJSON: canvasJSON
-            };
-            
-            return {
-              ...doc,
-              pages: updatedPages,
-              lastModified: new Date()
-            };
-          });
-        } else {
-          // Save empty page
-          const emptyCanvasJSON = JSON.stringify({
-            "version": "4.6.0",
-            "objects": [],
-            "background": "white"
-          });
-          
-          // Update the document
-          currentDocument.update(doc => {
-            const updatedPages = [...doc.pages];
-            updatedPages[pageToSaveIndex] = {
-              ...updatedPages[pageToSaveIndex],
-              canvasJSON: emptyCanvasJSON
-            };
-            
-            return {
-              ...doc,
-              pages: updatedPages,
-              lastModified: new Date()
-            };
-          });
+    return new Promise(async (resolve, reject) => {
+      try {
+        if (!canvas || !$currentDocument) {
+          console.error("LOAD ERROR: Canvas or document not available");
+          return reject(new Error("Canvas or document not available"));
         }
-      }
-    }
-    
-    // Force canvas to clear and reset
-    canvas.clear();
-    canvas.backgroundColor = 'white';
-    canvas.renderAll();
-    
-    // Find the page to load 
-    const pageToLoad = $currentDocument.pages.find(p => p.id === pageId);
-    
-    console.log(`Page to load:`, pageId, pageToLoad ? 'found' : 'not found');
-    
-    if (pageToLoad) {
-      // Clear canvas again to be sure
-      canvas.clear();
-      canvas.backgroundColor = 'white';
+        
+        console.log(`LOAD PHASE: loadPage called for page: ${pageId} (shouldSaveFirst: ${shouldSaveFirst})`);
+        
+        // Save current page first (only if requested and we have a current page)
+        if (shouldSaveFirst && $currentPage) {
+          console.log(`LOAD PHASE: Saving current page ${$currentPage} before loading ${pageId}`);
+          
+          // Use standard saveCurrentPage function to save the current page
+          saveCurrentPage();
+        }
+        
+        // Force canvas to clear and reset
+        console.log("LOAD PHASE: Clearing canvas");
+        canvas.clear();
+        canvas.backgroundColor = 'white';
+        canvas.renderAll();
+        
+        // IMPORTANT: Always get the latest data from the store
+        // This ensures we're not using stale data
+        const latestDoc = $currentDocument;
+        if (!latestDoc) {
+          console.error("LOAD ERROR: Current document is null");
+          return reject(new Error("Current document is null"));
+        }
+        
+        // Find the page to load in the latest document
+        const pageToLoad = latestDoc.pages.find(p => p.id === pageId);
+        
+        console.log(`LOAD PHASE: Page to load:`, pageId, pageToLoad ? 'found' : 'not found');
+        
+        if (!pageToLoad) {
+          console.error(`LOAD ERROR: Page ${pageId} not found in document`);
+          return reject(new Error(`Page ${pageId} not found in document`));
+        }
+        
+        console.log(`+----------------------------------+`);
+        console.log(`| LOAD PHASE: LOADING PAGE ${pageId} |`);
+        console.log(`+----------------------------------+`);
+        
+        // Clear canvas and prepare
+        console.log("LOAD PHASE: Clearing canvas and preparing");
+        canvas.clear();
+        canvas.backgroundColor = 'white';
+        
+        // Force a render to ensure canvas is totally clean
+        canvas.requestRenderAll();
+        canvas.renderAll();
+        
+        // Log detailed info about the page we're about to load
+        console.log("LOAD PHASE: Page data details:", {
+          pageId: pageToLoad.id,
+          hasCanvasData: !!pageToLoad.canvasJSON,
+          dataType: pageToLoad.canvasJSON ? typeof pageToLoad.canvasJSON : 'null',
+          dataLength: pageToLoad.canvasJSON ? 
+            (typeof pageToLoad.canvasJSON === 'string' ? 
+              pageToLoad.canvasJSON.length : 
+              JSON.stringify(pageToLoad.canvasJSON).length) : 0,
+          hasMasterPage: !!pageToLoad.masterPageId,
+          masterId: pageToLoad.masterPageId
+        });
       
-      // Force another render to ensure canvas is totally clean
-      canvas.renderAll();
+      // SUPER CRITICAL FIX: Force load latest data from IndexedDB
+  // This ensures we're working with the absolute latest data
+  const loadedDoc = await loadDocumentFromIndexedDB($currentDocument.id);
+  
+  console.log("FORCED DB LOAD:", {
+    hasDocument: !!loadedDoc,
+    pageCount: loadedDoc ? loadedDoc.pages.length : 0
+  });
+  
+  // Use data directly from IndexedDB for maximum reliability
+  const dbPage = loadedDoc ? loadedDoc.pages.find(p => p.id === pageId) : null;
+  console.log("DB PAGE CHECK:", {
+    originalLength: pageToLoad.canvasJSON ? pageToLoad.canvasJSON.length : 0,
+    dbLength: dbPage && dbPage.canvasJSON ? dbPage.canvasJSON.length : 0,
+    originalHasData: !!pageToLoad.canvasJSON,
+    dbHasData: !!(dbPage && dbPage.canvasJSON)
+  });
+  
+  // Always use the DB data if available
+  const pageData = dbPage || pageToLoad;
       
-      // Log detailed info about the page we're about to load
-      console.log("Loading page data:", {
-        pageId: pageToLoad.id,
-        hasCanvasData: !!pageToLoad.canvasJSON,
-        dataType: pageToLoad.canvasJSON ? typeof pageToLoad.canvasJSON : 'null',
-        dataLength: pageToLoad.canvasJSON ? 
-          (typeof pageToLoad.canvasJSON === 'string' ? 
-            pageToLoad.canvasJSON.length : 
-            JSON.stringify(pageToLoad.canvasJSON).length) : 0,
-        hasMasterPage: !!pageToLoad.masterPageId,
-        masterId: pageToLoad.masterPageId
-      });
-      
-      // Load content if it exists
-      if (pageToLoad.canvasJSON) {
+      // RADICAL NEW APPROACH: Use our custom manual object creation
+      if (pageData.canvasJSON) {
         try {
-          console.log("Loading canvas content for page:", pageId);
+          console.log("RADICAL APPROACH: Loading latest canvas content for page:", pageId);
+          
+          // First clear the canvas completely
+          canvas.clear();
+          canvas.backgroundColor = 'white';
           
           // Parse JSON if it's a string (from IndexedDB storage)
-          const jsonData = typeof pageToLoad.canvasJSON === 'string'
-            ? JSON.parse(pageToLoad.canvasJSON)
-            : pageToLoad.canvasJSON;
+          const jsonData = typeof pageData.canvasJSON === 'string'
+            ? JSON.parse(pageData.canvasJSON)
+            : pageData.canvasJSON;
           
           const objectCount = jsonData.objects ? jsonData.objects.length : 0;
-          console.log(`Canvas JSON parsed successfully, contains ${objectCount} objects`);
+          console.log(`JSON data parsed, contains ${objectCount} objects`);
           
-          // Verify fabric.js is fully loaded before we try to create objects
-          console.log("Fabric version:", fabric.version);
-          console.log("Fabric capabilities check:", {
-            hasCanvas: !!fabric.Canvas,
-            hasUtil: !!fabric.util,
-            hasEnlivenObjects: !!(fabric.util && fabric.util.enlivenObjects),
-            hasTextbox: !!fabric.Textbox
-          });
+          // Set the canvas background
+          canvas.backgroundColor = jsonData.background || 'white';
           
-          if (objectCount > 0) {
-            console.log("Object types to load:", jsonData.objects.map(obj => obj.type));
-          }
-          
-          // RADICAL NEW APPROACH: Create objects directly using Fabric constructors
-          // instead of using enlivenObjects which seems to be failing
-          
-          // Skip for empty canvases
+          // Handle empty canvas case
           if (objectCount === 0) {
-            console.log("Canvas is empty, simply setting background");
-            // Just set the background color for empty canvas
-            canvas.backgroundColor = jsonData.background || 'white';
+            console.log("Canvas is empty, only setting background");
             canvas.requestRenderAll();
             canvas.renderAll();
           } else {
-            // For canvases with objects, create them directly based on their type
-            console.log(`Loading ${objectCount} objects into canvas using direct creation`);
+            console.log(`RADICAL APPROACH: Creating ${objectCount} objects manually...`);
+            console.log("Object types:", jsonData.objects.map(obj => obj.type).join(', '));
             
-            try {
-              // Set the canvas background first
-              canvas.backgroundColor = jsonData.background || 'white';
+            // Use our custom function to create objects manually
+            const createdObjects = createObjectsManually(jsonData.objects);
+            
+            console.log(`Created ${createdObjects.length}/${objectCount} objects`);
+            
+            // Add all created objects to the canvas
+            createdObjects.forEach(obj => {
+              // Set essential properties
+              obj.visible = true;
+              obj.evented = true;
+              obj.selectable = $activeTool === ToolType.SELECT;
               
-              // Create objects directly by type
-              let createdCount = 0;
-              
-              jsonData.objects.forEach((objData, index) => {
-                let fabricObj = null;
-                
-                // Create different types of objects based on their 'type' property
-                switch (objData.type.toLowerCase()) {
-                  case 'textbox':
-                    console.log(`Creating textbox #${index} with text: ${objData.text}`);
-                    fabricObj = new fabric.Textbox(objData.text || 'Text', {
-                      left: objData.left || 100,
-                      top: objData.top || 100,
-                      width: objData.width || 200,
-                      fontFamily: objData.fontFamily || 'Arial',
-                      fontSize: objData.fontSize || 16,
-                      fontStyle: objData.fontStyle || 'normal',
-                      fontWeight: objData.fontWeight || 'normal',
-                      textAlign: objData.textAlign || 'left',
-                      fill: objData.fill || '#000000',
-                      id: objData.id || generateId(),
-                      angle: objData.angle || 0,
-                      scaleX: objData.scaleX || 1,
-                      scaleY: objData.scaleY || 1,
-                      lockMovementX: objData.lockMovementX || false,
-                      lockMovementY: objData.lockMovementY || false,
-                      selectable: $activeTool === ToolType.SELECT,
-                      evented: true
-                    });
-                    break;
-                    
-                  case 'rect':
-                    console.log(`Creating rectangle #${index}`);
-                    fabricObj = new fabric.Rect({
-                      left: objData.left || 100,
-                      top: objData.top || 100,
-                      width: objData.width || 100,
-                      height: objData.height || 100,
-                      fill: objData.fill || '#cccccc',
-                      stroke: objData.stroke || '#000000',
-                      strokeWidth: objData.strokeWidth || 1,
-                      rx: objData.rx || 0,
-                      ry: objData.ry || 0,
-                      angle: objData.angle || 0,
-                      scaleX: objData.scaleX || 1,
-                      scaleY: objData.scaleY || 1,
-                      id: objData.id || generateId(),
-                      selectable: $activeTool === ToolType.SELECT,
-                      evented: true
-                    });
-                    break;
-                    
-                  case 'ellipse':
-                    console.log(`Creating ellipse #${index}`);
-                    fabricObj = new fabric.Ellipse({
-                      left: objData.left || 100,
-                      top: objData.top || 100,
-                      rx: objData.rx || 50,
-                      ry: objData.ry || 50,
-                      fill: objData.fill || '#cccccc',
-                      stroke: objData.stroke || '#000000',
-                      strokeWidth: objData.strokeWidth || 1,
-                      angle: objData.angle || 0,
-                      scaleX: objData.scaleX || 1,
-                      scaleY: objData.scaleY || 1,
-                      id: objData.id || generateId(),
-                      selectable: $activeTool === ToolType.SELECT,
-                      evented: true
-                    });
-                    break;
-                    
-                  case 'line':
-                    console.log(`Creating line #${index}`);
-                    fabricObj = new fabric.Line([
-                      objData.x1 || 0, 
-                      objData.y1 || 0, 
-                      objData.x2 || 100, 
-                      objData.y2 || 100
-                    ], {
-                      stroke: objData.stroke || '#000000',
-                      strokeWidth: objData.strokeWidth || 1,
-                      angle: objData.angle || 0,
-                      scaleX: objData.scaleX || 1,
-                      scaleY: objData.scaleY || 1,
-                      id: objData.id || generateId(),
-                      selectable: $activeTool === ToolType.SELECT,
-                      evented: true
-                    });
-                    break;
-                    
-                  case 'image':
-                    // Images are more complex to recreate, we'll use a placeholder for now
-                    console.log(`Creating image placeholder for #${index}`);
-                    // We'll use a rect as placeholder and add text saying "Image"
-                    fabricObj = new fabric.Rect({
-                      left: objData.left || 100,
-                      top: objData.top || 100,
-                      width: objData.width || 100,
-                      height: objData.height || 100,
-                      fill: '#eeeeee',
-                      stroke: '#000000',
-                      strokeDashArray: [5, 5],
-                      id: objData.id || generateId(),
-                      selectable: $activeTool === ToolType.SELECT,
-                      evented: true
-                    });
-                    
-                    // Add text saying "Image" on top of the placeholder
-                    const imgText = new fabric.Text('Image', {
-                      left: (objData.left || 100) + (objData.width || 100) / 2,
-                      top: (objData.top || 100) + (objData.height || 100) / 2,
-                      originX: 'center',
-                      originY: 'center',
-                      fontSize: 12,
-                      fontFamily: 'Arial',
-                      fill: '#666666'
-                    });
-                    canvas.add(imgText);
-                    break;
-                    
-                  default:
-                    console.log(`Unsupported object type: ${objData.type}`);
-                    return; // Skip this object
-                }
-                
-                // If we successfully created an object, add it to the canvas
-                if (fabricObj) {
-                  // Add the object to the canvas
-                  canvas.add(fabricObj);
-                  
-                  // Copy ALL custom properties from the original object
-                  // This ensures we don't miss any important metadata
-                  Object.keys(objData).forEach(key => {
-                    // Skip properties that are standard Fabric object properties
-                    // or that were already set during construction
-                    const standardProps = [
-                      'type', 'left', 'top', 'width', 'height', 'fill', 
-                      'stroke', 'strokeWidth', 'rx', 'ry', 'x1', 'y1', 'x2', 'y2',
-                      'angle', 'scaleX', 'scaleY', 'fontFamily', 'fontSize', 
-                      'fontWeight', 'fontStyle', 'text', 'textAlign'
-                    ];
-                    
-                    if (!standardProps.includes(key)) {
-                      // Copy the custom property
-                      fabricObj[key] = objData[key];
-                    }
-                  });
-                  
-                  // Explicitly set important properties to ensure they're copied
-                  if (objData.fromMaster) {
-                    fabricObj.fromMaster = objData.fromMaster;
-                    fabricObj.masterId = objData.masterId;
-                    fabricObj.masterObjectId = objData.masterObjectId;
-                    fabricObj.overridable = objData.overridable !== false; // Default to true
-                  }
-                  
-                  // Set up event handlers for text flow
-                  if (fabricObj.type === 'textbox' && textFlow) {
-                    if (!fabricObj.linkedObjectIds) {
-                      fabricObj.linkedObjectIds = objData.linkedObjectIds || [];
-                    }
-                    
-                    fabricObj.on('modified', () => updateTextFlow(fabricObj));
-                    fabricObj.on('changed', () => updateTextFlow(fabricObj));
-                  }
-                  
-                  createdCount++;
-                }
-              });
-              
-              console.log(`Created ${createdCount}/${objectCount} objects directly`);
-              
-              // Final check
-              const finalObjects = canvas.getObjects();
-              console.log(`Canvas now has ${finalObjects.length} total objects`);
-              
-              // Print detailed object info for debugging
-              if (finalObjects.length > 0) {
-                console.log("Recreated objects list:");
-                finalObjects.forEach((obj, idx) => {
-                  console.log(`[${idx}] Type: ${obj.type}, Pos: (${Math.round(obj.left)},${Math.round(obj.top)}), ID: ${obj.id}`);
-                });
-              } else {
-                console.warn("No objects were successfully created! This should be investigated.");
+              // Different handling for master page objects
+              if (obj.fromMaster) {
+                obj.selectable = false;
+                obj.hoverCursor = 'not-allowed';
               }
               
-              // Force multiple renders to ensure visibility
-              canvas.requestRenderAll();
-              canvas.renderAll();
+              // Add to canvas
+              canvas.add(obj);
+            });
+            
+            // Log what we've loaded
+            const finalObjects = canvas.getObjects();
+            console.log(`Canvas now has ${finalObjects.length} objects after load`);
+            
+            // Force visibility check and render
+            finalObjects.forEach(obj => {
+              if (!obj.visible) {
+                console.log(`Object of type ${obj.type} was not visible, forcing visibility`);
+                obj.visible = true;
+              }
               
-              // Additional render cycle with delay
-              setTimeout(() => {
-                // Ensure all objects are properly set up
-                canvas.getObjects().forEach(obj => {
-                  obj.evented = true;
-                  obj.selectable = $activeTool === ToolType.SELECT;
-                });
-                
-                canvas.requestRenderAll();
-                canvas.renderAll();
-                
-                // Log the result
-                console.log(`After final render: ${canvas.getObjects().length} objects visible on canvas`);
-              }, 100);
-            } catch (err) {
-              console.error("Error creating objects directly:", err);
-            }
+              if (obj.opacity === 0) {
+                console.log(`Object of type ${obj.type} had 0 opacity, setting to 1`);
+                obj.opacity = 1;
+              }
+            });
           }
           
-        } catch (err) {
-          console.error('Error parsing canvas JSON:', err);
-          console.error('Data that caused the error:', 
-            typeof pageToLoad.canvasJSON === 'string' ? 
-              pageToLoad.canvasJSON.substring(0, 100) + '...' : 
-              JSON.stringify(pageToLoad.canvasJSON).substring(0, 100) + '...');
+          // Force multiple renders with delays to ensure all objects become visible
+          canvas.requestRenderAll();
+          canvas.renderAll();
           
-          // Continue with a blank canvas if JSON parsing fails
+          // Delayed render for better assurance
+          console.log("Scheduling delayed render...");
+          setTimeout(() => {
+            console.log("Executing first delayed render");
+            canvas.requestRenderAll();
+            canvas.renderAll();
+            
+            // Second delayed render
+            setTimeout(() => {
+              console.log("Executing second delayed render");
+              canvas.getObjects().forEach(obj => {
+                obj.visible = true;
+                obj.opacity = obj.opacity < 0.1 ? 1 : obj.opacity;
+              });
+              canvas.requestRenderAll();
+              canvas.renderAll();
+            }, 100);
+          }, 100);
+        } catch (err) {
+          console.error('Error with RADICAL approach:', err);
+          
+          // Continue with a blank canvas if something fails
           canvas.clear();
           canvas.backgroundColor = 'white';
           canvas.renderAll();
@@ -678,11 +634,39 @@
         console.log("No canvas data to load, starting with empty canvas");
       }
       
-      // Apply master page if specified
-      if (pageToLoad.masterPageId) {
-        applyMasterPage(pageToLoad.masterPageId, pageToLoad.overrides || {});
+      // Apply master page if specified (after a short delay)
+      setTimeout(() => {
+        if (pageToLoad.masterPageId) {
+          console.log("LOAD PHASE: Applying master page:", pageToLoad.masterPageId);
+          applyMasterPage(pageToLoad.masterPageId, pageToLoad.overrides || {});
+        }
+        
+        // Force final render
+        setTimeout(() => {
+          // Final verification of object visibility
+          const objects = canvas.getObjects();
+          console.log(`LOAD PHASE: Final check: ${objects.length} objects on canvas`);
+          
+          objects.forEach(obj => {
+            obj.visible = true;
+            obj.evented = true;
+            obj.selectable = $activeTool === ToolType.SELECT;
+          });
+          
+          canvas.requestRenderAll();
+          canvas.renderAll();
+          
+          // Resolve the promise to indicate that loading is complete
+          console.log(`LOAD PHASE: Page ${pageId} loading complete with ${objects.length} objects`);
+          resolve(true);
+        }, 100);
+      }, 100);
+      
+      } catch (err) {
+        console.error(`LOAD ERROR: Failed to load page ${pageId}:`, err);
+        reject(err);
       }
-    }
+    }); // End of promise
   }
   
   function saveCurrentPage() {
@@ -1125,43 +1109,88 @@
       img.onload = function() {
         const imageOptions = $currentToolOptions;
         
-        // Create fabric image object
-        fabric.Image.fromURL(imgSrc, function(fabricImg) {
-          // Scale down very large images to fit canvas better
-          const maxDimension = Math.max(img.width, img.height);
-          let scale = 1;
-          
-          if (maxDimension > 1000) {
-            scale = 1000 / maxDimension;
-          }
-          
-          fabricImg.set({
-            left: (canvas.width - img.width * scale) / 2,
-            top: (canvas.height - img.height * scale) / 2,
-            scaleX: scale,
-            scaleY: scale
-          });
-          
-          // If not preserving aspect ratio, make controls to allow separate scaling
-          if (!imageOptions.preserveAspectRatio) {
-            fabricImg.setControlsVisibility({
-              mt: true, // middle top
-              mb: true, // middle bottom
-              ml: true, // middle left
-              mr: true  // middle right
+        console.log("Image loaded, creating Fabric image object");
+        
+        // Create fabric image object with better error handling
+        try {
+          fabric.Image.fromURL(imgSrc, function(fabricImg) {
+            if (!fabricImg) {
+              console.error("Failed to create Fabric image - null object returned");
+              return;
+            }
+            
+            // Scale down very large images to fit canvas better
+            const maxDimension = Math.max(img.width, img.height);
+            let scale = 1;
+            
+            if (maxDimension > 1000) {
+              scale = 1000 / maxDimension;
+            }
+            
+            // Ensure required properties are set for visibility
+            fabricImg.set({
+              left: (canvas.width - img.width * scale) / 2,
+              top: (canvas.height - img.height * scale) / 2,
+              scaleX: scale,
+              scaleY: scale,
+              visible: true,
+              evented: true,
+              selectable: true,
+              id: generateId(),
+              opacity: 1
             });
-          }
-          
-          canvas.add(fabricImg);
-          canvas.setActiveObject(fabricImg);
-          canvas.renderAll();
-          
-          // Reset file input for future uploads
-          event.target.value = '';
-        });
+            
+            // If not preserving aspect ratio, make controls to allow separate scaling
+            if (!imageOptions.preserveAspectRatio) {
+              fabricImg.setControlsVisibility({
+                mt: true, // middle top
+                mb: true, // middle bottom
+                ml: true, // middle left
+                mr: true  // middle right
+              });
+            }
+            
+            console.log("Adding image to canvas");
+            canvas.add(fabricImg);
+            
+            // Ensure object is still visible after adding
+            fabricImg.visible = true;
+            fabricImg.opacity = 1;
+            
+            canvas.setActiveObject(fabricImg);
+            
+            // Ensure multiple renders to force visibility
+            canvas.requestRenderAll();
+            canvas.renderAll();
+            
+            // Secondary render cycle
+            setTimeout(() => {
+              console.log("Secondary render cycle for image");
+              fabricImg.visible = true;
+              canvas.requestRenderAll();
+              canvas.renderAll();
+            }, 100);
+            
+            // Reset file input for future uploads
+            event.target.value = '';
+          });
+        } catch (err) {
+          console.error("Error creating image object:", err);
+        }
+      };
+      
+      // Setup error handling for image loading
+      img.onerror = function() {
+        console.error("Error loading image");
+        event.target.value = '';
       };
       
       img.src = imgSrc;
+    };
+    
+    reader.onerror = function() {
+      console.error("Error reading file");
+      event.target.value = '';
     };
     
     reader.readAsDataURL(file);
@@ -1261,6 +1290,471 @@
     return false;
   }
   
+  // Function to handle canvas container scrolling
+  function handleScroll() {
+    if (canvasContainer) {
+      canvasScrollX = canvasContainer.scrollLeft;
+      canvasScrollY = canvasContainer.scrollTop;
+    }
+  }
+  
+  // Grid rendering function
+  /**
+   * FÖRBÄTTRAD CSS-BASERAD GRID RENDERING
+   * Istället för att lägga till grid-linjer på canvas, lägger vi ett CSS-grid ovanpå canvas
+   * Använder 1px rena linjer med precise positionering för att förhindra subbpixel-problem
+   */
+  function renderGrid() {
+    // Bail out early if not mounted or no canvas or server-side
+    if (!isMounted || !canvas || typeof window === 'undefined') {
+      return;
+    }
+    
+    // Ta bort eventuella överliggande grid-element
+    const existingOverlayGrid = document.getElementById('canvas-grid-overlay');
+    if (existingOverlayGrid) {
+      existingOverlayGrid.remove();
+    }
+    
+    // Ta bort de gamla grid-objekten från canvas
+    const existingGridLines = canvas.getObjects().filter(obj => obj.gridElement);
+    existingGridLines.forEach(line => canvas.remove(line));
+    
+    // Kontrollera om grid är aktiverad
+    if (!$currentDocument?.metadata?.grid?.enabled) {
+      canvas.renderAll();
+      return;
+    }
+    
+    const { size, color, opacity, subdivisions, units = 'mm' } = $currentDocument.metadata.grid;
+    
+    // Beräkna grid-storlek i pixlar - VIKTIGT: använd INTEGER pixlar
+    let gridSize;
+    if (convertToPixels) {
+      // Convert grid size from document units to pixels using our utility function
+      // Math.floor istället för Math.round för att säkerställa exakt pixelpositionering
+      gridSize = Math.max(10, Math.floor(convertToPixels(size, units)));
+    } else {
+      // Fallback conversion (same as the original)
+      const pxPerMm = 3.78; // Approximate conversion at 96 DPI
+      gridSize = Math.max(10, Math.floor(size * pxPerMm));
+    }
+    
+    // Beräkna underindelningens storlek - OCKSÅ med INTEGER pixlar
+    const subSize = Math.max(1, Math.floor(gridSize / subdivisions));
+    
+    // Hitta canvas container
+    const canvasContainer = canvasElement.parentElement;
+    if (!canvasContainer) {
+      console.error('Could not find canvas container');
+      return;
+    }
+    
+    // Säkerställ att canvas container har rätt positionering
+    canvasContainer.style.position = 'relative';
+    
+    // Skaffa exakta pixeldimensioner från canvas
+    const canvasWidth = Math.floor(width);
+    const canvasHeight = Math.floor(height);
+    
+    // Hämta exakt canvasElement position för perfekt justering
+    const canvasRect = canvasElement.getBoundingClientRect();
+    const containerRect = canvasContainer.getBoundingClientRect();
+    
+    // Beräkna offset mellan canvas och container (för pixel-perfect positionering)
+    const offsetLeft = canvasRect.left - containerRect.left;
+    const offsetTop = canvasRect.top - containerRect.top;
+    
+    // Skapa CSS för grid-överlagringen med förbättrad precision
+    // Använd translateZ(0) för att tvinga pixelsnapping i moderna webbläsare
+    const gridOverlayCSS = `
+      position: absolute;
+      top: ${Math.floor(offsetTop)}px;
+      left: ${Math.floor(offsetLeft)}px;
+      width: ${canvasWidth}px;
+      height: ${canvasHeight}px;
+      pointer-events: none;
+      z-index: 10;
+      background-color: transparent;
+      transform-origin: 0 0;
+      transform: translateZ(0);
+      image-rendering: -webkit-optimize-contrast;
+      image-rendering: crisp-edges;
+      will-change: transform;
+    `;
+    
+    // Skapa grid-överlagringselementet
+    const gridOverlay = document.createElement('div');
+    gridOverlay.id = 'canvas-grid-overlay';
+    gridOverlay.style.cssText = gridOverlayCSS;
+    
+    // Skapa SVG-baserat grid istället för CSS background
+    // SVG ger bättre kontroll över renderingen
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('width', canvasWidth);
+    svg.setAttribute('height', canvasHeight);
+    svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    svg.style.position = 'absolute';
+    svg.style.top = '0';
+    svg.style.left = '0';
+    svg.style.width = '100%';
+    svg.style.height = '100%';
+    svg.style.overflow = 'visible';
+    svg.style.pointerEvents = 'none';
+    
+    // Lägg till en definierad pattern för huvudgrid
+    const mainPattern = document.createElementNS('http://www.w3.org/2000/svg', 'pattern');
+    mainPattern.setAttribute('id', 'mainGrid');
+    mainPattern.setAttribute('width', gridSize);
+    mainPattern.setAttribute('height', gridSize);
+    mainPattern.setAttribute('patternUnits', 'userSpaceOnUse');
+    
+    // Skapa huvudgridlinjer
+    const mainHorizLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    mainHorizLine.setAttribute('x1', '0');
+    mainHorizLine.setAttribute('y1', '0');
+    mainHorizLine.setAttribute('x2', gridSize);
+    mainHorizLine.setAttribute('y2', '0');
+    mainHorizLine.setAttribute('stroke', color);
+    mainHorizLine.setAttribute('stroke-width', '1');
+    mainHorizLine.setAttribute('stroke-opacity', opacity);
+    mainPattern.appendChild(mainHorizLine);
+    
+    const mainVertLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    mainVertLine.setAttribute('x1', '0');
+    mainVertLine.setAttribute('y1', '0');
+    mainVertLine.setAttribute('x2', '0');
+    mainVertLine.setAttribute('y2', gridSize);
+    mainVertLine.setAttribute('stroke', color);
+    mainVertLine.setAttribute('stroke-width', '1');
+    mainVertLine.setAttribute('stroke-opacity', opacity);
+    mainPattern.appendChild(mainVertLine);
+    
+    svg.appendChild(mainPattern);
+    
+    // Lägg till en definierad pattern för undergrid om tillämpligt
+    if (subdivisions > 1 && subSize > 1) {
+      const subPattern = document.createElementNS('http://www.w3.org/2000/svg', 'pattern');
+      subPattern.setAttribute('id', 'subGrid');
+      subPattern.setAttribute('width', subSize);
+      subPattern.setAttribute('height', subSize);
+      subPattern.setAttribute('patternUnits', 'userSpaceOnUse');
+      
+      // Skapa undergridlinjer med lägre opacitet
+      const subHorizLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      subHorizLine.setAttribute('x1', '0');
+      subHorizLine.setAttribute('y1', '0');
+      subHorizLine.setAttribute('x2', subSize);
+      subHorizLine.setAttribute('y2', '0');
+      subHorizLine.setAttribute('stroke', color);
+      subHorizLine.setAttribute('stroke-width', '1');
+      subHorizLine.setAttribute('stroke-opacity', opacity * 0.5);
+      subPattern.appendChild(subHorizLine);
+      
+      const subVertLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      subVertLine.setAttribute('x1', '0');
+      subVertLine.setAttribute('y1', '0');
+      subVertLine.setAttribute('x2', '0');
+      subVertLine.setAttribute('y2', subSize);
+      subVertLine.setAttribute('stroke', color);
+      subVertLine.setAttribute('stroke-width', '1');
+      subVertLine.setAttribute('stroke-opacity', opacity * 0.5);
+      subPattern.appendChild(subVertLine);
+      
+      svg.appendChild(subPattern);
+      
+      // Lägg till en rektangel för undergrid
+      const subRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      subRect.setAttribute('width', '100%');
+      subRect.setAttribute('height', '100%');
+      subRect.setAttribute('fill', 'url(#subGrid)');
+      svg.appendChild(subRect);
+    }
+    
+    // Lägg till en rektangel för huvudgrid
+    const mainRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    mainRect.setAttribute('width', '100%');
+    mainRect.setAttribute('height', '100%');
+    mainRect.setAttribute('fill', 'url(#mainGrid)');
+    svg.appendChild(mainRect);
+    
+    // Lägg till SVG till gridet
+    gridOverlay.appendChild(svg);
+    
+    // Lägg till grid-överlagringen i canvas container
+    canvasContainer.appendChild(gridOverlay);
+    
+    // För debugging - lägg till en synlig ram runt canvas och grid
+    // för att se om de är korrekt justerade
+    if (window.DEBUG_GRID_ALIGNMENT) {
+      gridOverlay.style.border = '1px solid red';
+      canvasElement.style.border = '1px solid blue';
+      console.log('Canvas rect:', canvasRect);
+      console.log('Container rect:', containerRect);
+      console.log('Grid overlay CSS:', gridOverlayCSS);
+    }
+    
+    // Rendera canvas för att se till att allt visas korrekt
+    canvas.renderAll();
+  }
+  
+  // Guide creation and management functions
+  function createHorizontalGuide(position) {
+    if (!canvas || !$currentDocument || !$currentPage) return;
+    
+    // Create the guide line on the canvas
+    const guide = new fabric.Line([0, position, width, position], {
+      stroke: '#0066CC',
+      strokeWidth: 1,
+      strokeDashArray: [5, 5],
+      selectable: false,
+      evented: true,
+      guide: true,
+      horizontal: true,
+      excludeFromExport: true,
+      originalPosition: position // Store original position for updating
+    });
+    
+    // Add guide to canvas
+    canvas.add(guide);
+    
+    // Save guide position to document
+    currentDocument.update(doc => {
+      const pageIndex = doc.pages.findIndex(p => p.id === $currentPage);
+      if (pageIndex >= 0) {
+        const updatedPages = [...doc.pages];
+        
+        // Initialize guides array if it doesn't exist
+        if (!updatedPages[pageIndex].guides) {
+          updatedPages[pageIndex].guides = { horizontal: [], vertical: [] };
+        }
+        
+        // Add new guide position
+        updatedPages[pageIndex].guides.horizontal.push(position);
+        
+        return {
+          ...doc,
+          pages: updatedPages,
+          lastModified: new Date()
+        };
+      }
+      return doc;
+    });
+    
+    // Add drag behavior
+    makeGuideDraggable(guide);
+    
+    return guide;
+  }
+  
+  function createVerticalGuide(position) {
+    if (!canvas || !$currentDocument || !$currentPage) return;
+    
+    // Create the guide line on the canvas
+    const guide = new fabric.Line([position, 0, position, height], {
+      stroke: '#0066CC',
+      strokeWidth: 1,
+      strokeDashArray: [5, 5],
+      selectable: false,
+      evented: true,
+      guide: true,
+      horizontal: false,
+      excludeFromExport: true,
+      originalPosition: position // Store original position for updating
+    });
+    
+    // Add guide to canvas
+    canvas.add(guide);
+    
+    // Save guide position to document
+    currentDocument.update(doc => {
+      const pageIndex = doc.pages.findIndex(p => p.id === $currentPage);
+      if (pageIndex >= 0) {
+        const updatedPages = [...doc.pages];
+        
+        // Initialize guides array if it doesn't exist
+        if (!updatedPages[pageIndex].guides) {
+          updatedPages[pageIndex].guides = { horizontal: [], vertical: [] };
+        }
+        
+        // Add new guide position
+        updatedPages[pageIndex].guides.vertical.push(position);
+        
+        return {
+          ...doc,
+          pages: updatedPages,
+          lastModified: new Date()
+        };
+      }
+      return doc;
+    });
+    
+    // Add drag behavior
+    makeGuideDraggable(guide);
+    
+    return guide;
+  }
+  
+  // Make guides draggable
+  function makeGuideDraggable(guide) {
+    guide.on('mousedown', function(e) {
+      // Skip if it's a right-click
+      if (e.e.button === 2) return;
+      
+      e.e.stopPropagation();
+      
+      const isHorizontal = guide.horizontal;
+      
+      // Set up move handler
+      const moveHandler = function(moveEvent) {
+        const pointer = canvas.getPointer(moveEvent.e);
+        
+        if (isHorizontal) {
+          guide.set({ y1: pointer.y, y2: pointer.y });
+        } else {
+          guide.set({ x1: pointer.x, x2: pointer.x });
+        }
+        
+        canvas.renderAll();
+      };
+      
+      // Set up mouseup handler
+      const upHandler = function() {
+        canvas.off('mouse:move', moveHandler);
+        canvas.off('mouse:up', upHandler);
+        
+        // Update guide position in document
+        const newPos = isHorizontal ? guide.y1 : guide.x1;
+        updateGuidePosition(guide, newPos);
+      };
+      
+      // Add event listeners
+      canvas.on('mouse:move', moveHandler);
+      canvas.on('mouse:up', upHandler);
+    });
+  }
+  
+  // Update guide position in document
+  function updateGuidePosition(guide, newPosition) {
+    if (!$currentDocument || !$currentPage) return;
+    
+    const isHorizontal = guide.horizontal;
+    const oldPosition = guide.originalPosition;
+    
+    currentDocument.update(doc => {
+      const pageIndex = doc.pages.findIndex(p => p.id === $currentPage);
+      if (pageIndex >= 0) {
+        const updatedPages = [...doc.pages];
+        const guides = updatedPages[pageIndex].guides;
+        
+        if (!guides) return doc;
+        
+        // Find and update the guide position
+        const guideArray = isHorizontal ? guides.horizontal : guides.vertical;
+        const guideIndex = guideArray.indexOf(oldPosition);
+        
+        if (guideIndex >= 0) {
+          guideArray[guideIndex] = newPosition;
+          guide.originalPosition = newPosition;
+        }
+        
+        return {
+          ...doc,
+          pages: updatedPages,
+          lastModified: new Date()
+        };
+      }
+      return doc;
+    });
+  }
+  
+  // Delete a guide
+  function deleteGuide(index, isHorizontal) {
+    if (!canvas || !$currentDocument || !$currentPage) return;
+    
+    // Remove from document first
+    currentDocument.update(doc => {
+      const pageIndex = doc.pages.findIndex(p => p.id === $currentPage);
+      if (pageIndex >= 0) {
+        const updatedPages = [...doc.pages];
+        const guides = updatedPages[pageIndex].guides;
+        
+        if (!guides) return doc;
+        
+        // Get the guide array and position
+        const guideArray = isHorizontal ? guides.horizontal : guides.vertical;
+        
+        if (index >= 0 && index < guideArray.length) {
+          // Remove the guide position
+          guideArray.splice(index, 1);
+          
+          // Now remove from canvas
+          const guidesToRemove = canvas.getObjects().filter(obj => 
+            obj.guide && obj.horizontal === isHorizontal
+          );
+          
+          if (index < guidesToRemove.length) {
+            canvas.remove(guidesToRemove[index]);
+          }
+        }
+        
+        return {
+          ...doc,
+          pages: updatedPages,
+          lastModified: new Date()
+        };
+      }
+      return doc;
+    });
+  }
+  
+  // Load guides for current page
+  function loadGuides() {
+    if (!canvas || !$currentDocument || !$currentPage) return;
+    
+    // Clear existing guides
+    const existingGuides = canvas.getObjects().filter(obj => obj.guide);
+    existingGuides.forEach(guide => canvas.remove(guide));
+    
+    // Find current page
+    const currentPageObj = $currentDocument.pages.find(p => p.id === $currentPage);
+    if (!currentPageObj || !currentPageObj.guides) return;
+    
+    // Create horizontal guides
+    if (currentPageObj.guides.horizontal && Array.isArray(currentPageObj.guides.horizontal)) {
+      currentPageObj.guides.horizontal.forEach(yPos => {
+        createHorizontalGuide(yPos);
+      });
+    }
+    
+    // Create vertical guides
+    if (currentPageObj.guides.vertical && Array.isArray(currentPageObj.guides.vertical)) {
+      currentPageObj.guides.vertical.forEach(xPos => {
+        createVerticalGuide(xPos);
+      });
+    }
+  }
+  
+  // Handler for ruler events
+  function handleCreateGuide(event) {
+    const { position, isHorizontal } = event.detail;
+    if (isHorizontal) {
+      createHorizontalGuide(position);
+    } else {
+      createVerticalGuide(position);
+    }
+  }
+  
+  function handleUpdateGuide(event) {
+    // This would be used for live updating during drag
+    // Implementation depends on how you want to handle visual updates
+  }
+  
+  function handleDeleteGuide(event) {
+    const { index, isHorizontal } = event.detail;
+    deleteGuide(index, isHorizontal);
+  }
+  
   /**
    * Handle double-click events on canvas objects
    * @param {Object} options - Fabric.js mouse event options
@@ -1358,39 +1852,156 @@
       
       // Process master page objects
       if (jsonData && jsonData.objects && Array.isArray(jsonData.objects)) {
+        // For better reliability, gather all objects to enliven at once
+        const objectsToEnliven = [];
+        
         jsonData.objects.forEach(objData => {
           // Skip objects that are overridden
           if (objData.masterObjectId && overrides[objData.masterObjectId]) {
             return;
           }
-          
-          // Create the fabric object from the JSON
-          fabric.util.enlivenObjects([objData], (objects) => {
-            if (objects.length === 0) return;
-            
-            const fabricObj = objects[0];
-            
-            // Mark as from master page
-            fabricObj.fromMaster = true;
-            fabricObj.masterId = masterPageId;
-            fabricObj.masterObjectId = objData.masterObjectId || `master-obj-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-            fabricObj.overridable = objData.overridable !== false; // Default to true
-            
-            // Special settings for master objects
-            fabricObj.selectable = false;
-            fabricObj.evented = true; // Allow events for context menu
-            fabricObj.hoverCursor = 'not-allowed';
-            
-            // Add a subtle visual difference to master objects
-            fabricObj.opacity = fabricObj.opacity || 1;
-            
-            // Add to canvas
-            canvas.add(fabricObj);
-            
-            // Make sure master objects are rendered behind regular objects
-            fabricObj.moveTo(0);
-          });
+          objectsToEnliven.push(objData);
         });
+        
+        if (objectsToEnliven.length > 0) {
+          console.log(`Enlivening ${objectsToEnliven.length} master page objects`);
+          // Batch enliven all objects at once for better performance
+          try {
+            fabric.util.enlivenObjects(objectsToEnliven, (objects) => {
+              console.log(`Successfully enlivened ${objects.length} master objects`);
+              
+              objects.forEach((fabricObj, index) => {
+                if (!fabricObj) {
+                  console.error("Failed to enliven object at index", index);
+                  return;
+                }
+                
+                // Get original data to check masterObjectId
+                const origData = objectsToEnliven[index];
+                
+                // Mark as from master page
+                fabricObj.fromMaster = true;
+                fabricObj.masterId = masterPageId;
+                fabricObj.masterObjectId = origData.masterObjectId || 
+                  `master-obj-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+                fabricObj.overridable = origData.overridable !== false; // Default to true
+                
+                // Special settings for master objects
+                fabricObj.selectable = false;
+                fabricObj.evented = true; // Allow events for context menu
+                fabricObj.hoverCursor = 'not-allowed';
+                fabricObj.visible = true; // Ensure visibility
+                
+                // Add a subtle visual difference to master objects
+                fabricObj.opacity = fabricObj.opacity || 1;
+                
+                // Add to canvas
+                canvas.add(fabricObj);
+                
+                // Make sure master objects are rendered behind regular objects
+                fabricObj.moveTo(0);
+              });
+              
+              // Force a render after all objects are added
+              canvas.requestRenderAll();
+              canvas.renderAll();
+            });
+          } catch (error) {
+            console.error("Error enlivening master page objects:", error);
+            
+            // Fallback to manual object creation if enlivenObjects fails
+            objectsToEnliven.forEach(objData => {
+              try {
+                // Create objects manually based on type
+                let fabricObj = null;
+                
+                switch(objData.type) {
+                  case 'textbox':
+                    fabricObj = new fabric.Textbox(objData.text || 'Text', {
+                      left: objData.left || 0,
+                      top: objData.top || 0,
+                      width: objData.width || 200,
+                      fontFamily: objData.fontFamily || 'Arial',
+                      fontSize: objData.fontSize || 16,
+                      fill: objData.fill || '#000',
+                      angle: objData.angle || 0,
+                      scaleX: objData.scaleX || 1,
+                      scaleY: objData.scaleY || 1
+                    });
+                    break;
+                    
+                  case 'rect':
+                    fabricObj = new fabric.Rect({
+                      left: objData.left || 0,
+                      top: objData.top || 0,
+                      width: objData.width || 50,
+                      height: objData.height || 50,
+                      fill: objData.fill || '#ccc',
+                      stroke: objData.stroke,
+                      strokeWidth: objData.strokeWidth,
+                      angle: objData.angle || 0,
+                      scaleX: objData.scaleX || 1,
+                      scaleY: objData.scaleY || 1
+                    });
+                    break;
+                    
+                  case 'ellipse':
+                    fabricObj = new fabric.Ellipse({
+                      left: objData.left || 0,
+                      top: objData.top || 0,
+                      rx: objData.rx || 25,
+                      ry: objData.ry || 25,
+                      fill: objData.fill || '#ccc',
+                      stroke: objData.stroke,
+                      strokeWidth: objData.strokeWidth,
+                      angle: objData.angle || 0,
+                      scaleX: objData.scaleX || 1,
+                      scaleY: objData.scaleY || 1
+                    });
+                    break;
+                    
+                  case 'line':
+                    fabricObj = new fabric.Line(
+                      [objData.x1 || 0, objData.y1 || 0, objData.x2 || 50, objData.y2 || 50],
+                      {
+                        left: objData.left || 0,
+                        top: objData.top || 0,
+                        stroke: objData.stroke || '#000',
+                        strokeWidth: objData.strokeWidth || 1,
+                        angle: objData.angle || 0,
+                        scaleX: objData.scaleX || 1,
+                        scaleY: objData.scaleY || 1
+                      }
+                    );
+                    break;
+                }
+                
+                if (fabricObj) {
+                  // Add master page properties
+                  fabricObj.fromMaster = true;
+                  fabricObj.masterId = masterPageId;
+                  fabricObj.masterObjectId = objData.masterObjectId || 
+                    `master-obj-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+                  fabricObj.overridable = objData.overridable !== false;
+                  fabricObj.selectable = false;
+                  fabricObj.evented = true;
+                  fabricObj.hoverCursor = 'not-allowed';
+                  fabricObj.visible = true;
+                  fabricObj.opacity = objData.opacity || 1;
+                  
+                  // Add to canvas
+                  canvas.add(fabricObj);
+                  fabricObj.moveTo(0);
+                }
+              } catch (objError) {
+                console.error("Error creating fallback object:", objError);
+              }
+            });
+            
+            canvas.requestRenderAll();
+            canvas.renderAll();
+          }
+        }
       }
       
       canvas.renderAll();
@@ -1406,51 +2017,164 @@
   export function overrideMasterObject(masterObject) {
     if (!canvas || !masterObject || !masterObject.fromMaster || !masterObject.masterObjectId) return;
     
-    // Clone the master object without master-specific properties
-    const clone = fabric.util.object.clone(masterObject);
-    
-    // Remove master-specific properties
-    clone.fromMaster = false;
-    clone.masterId = undefined;
-    clone.masterObjectId = undefined;
-    clone.overridable = undefined;
-    
-    // Make selectable and interactive
-    clone.selectable = true;
-    clone.evented = true;
-    clone.hoverCursor = 'move';
-    
-    // Restore full opacity
-    clone.opacity = 1;
-    
-    // Add to canvas
-    canvas.add(clone);
-    
-    // Remove the master object
-    canvas.remove(masterObject);
-    
-    // Mark as overridden in the current page
-    if ($currentPage && $currentDocument) {
-      const pageIndex = $currentDocument.pages.findIndex(p => p.id === $currentPage);
-      if (pageIndex >= 0) {
-        const updatedPages = [...$currentDocument.pages];
-        if (!updatedPages[pageIndex].overrides) {
-          updatedPages[pageIndex].overrides = {};
-        }
-        
-        updatedPages[pageIndex].overrides[masterObject.masterObjectId] = true;
-        
-        currentDocument.update(doc => ({
-          ...doc,
-          pages: updatedPages,
-          lastModified: new Date()
-        }));
+    try {
+      console.log(`Overriding master object: ${masterObject.type}, ID: ${masterObject.masterObjectId}`);
+      
+      // Clone the master object without master-specific properties
+      // Use our own cloning method to ensure compatibility with latest Fabric.js
+      let clone;
+      
+      // Handle cloning differently based on object type
+      switch (masterObject.type) {
+        case 'textbox':
+          clone = new fabric.Textbox(masterObject.text || 'Text', {
+            left: masterObject.left,
+            top: masterObject.top,
+            width: masterObject.width,
+            fontFamily: masterObject.fontFamily,
+            fontSize: masterObject.fontSize,
+            fontStyle: masterObject.fontStyle,
+            fontWeight: masterObject.fontWeight,
+            textAlign: masterObject.textAlign,
+            fill: masterObject.fill,
+            angle: masterObject.angle,
+            scaleX: masterObject.scaleX,
+            scaleY: masterObject.scaleY
+          });
+          break;
+          
+        case 'rect':
+          clone = new fabric.Rect({
+            left: masterObject.left,
+            top: masterObject.top,
+            width: masterObject.width,
+            height: masterObject.height,
+            fill: masterObject.fill,
+            stroke: masterObject.stroke,
+            strokeWidth: masterObject.strokeWidth,
+            rx: masterObject.rx,
+            ry: masterObject.ry,
+            angle: masterObject.angle,
+            scaleX: masterObject.scaleX,
+            scaleY: masterObject.scaleY
+          });
+          break;
+          
+        case 'ellipse':
+          clone = new fabric.Ellipse({
+            left: masterObject.left,
+            top: masterObject.top,
+            rx: masterObject.rx,
+            ry: masterObject.ry,
+            fill: masterObject.fill,
+            stroke: masterObject.stroke,
+            strokeWidth: masterObject.strokeWidth,
+            angle: masterObject.angle,
+            scaleX: masterObject.scaleX,
+            scaleY: masterObject.scaleY
+          });
+          break;
+          
+        case 'line':
+          clone = new fabric.Line(
+            [masterObject.x1, masterObject.y1, masterObject.x2, masterObject.y2],
+            {
+              left: masterObject.left,
+              top: masterObject.top,
+              stroke: masterObject.stroke,
+              strokeWidth: masterObject.strokeWidth,
+              angle: masterObject.angle,
+              scaleX: masterObject.scaleX,
+              scaleY: masterObject.scaleY
+            }
+          );
+          break;
+          
+        default:
+          // For other object types, try standard cloning
+          try {
+            clone = fabric.util.object.clone(masterObject);
+          } catch (cloneErr) {
+            console.error("Error cloning master object:", cloneErr);
+            
+            // Fallback to creating a rectangle placeholder
+            clone = new fabric.Rect({
+              left: masterObject.left || 100,
+              top: masterObject.top || 100,
+              width: masterObject.width || 100,
+              height: masterObject.height || 50,
+              fill: '#f0f0f0',
+              stroke: '#ff0000',
+              strokeDashArray: [5, 5],
+              rx: 5,
+              ry: 5
+            });
+          }
+          break;
       }
+      
+      // Generate a new unique ID for the clone
+      clone.id = `override-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+      
+      // Remove master-specific properties
+      clone.fromMaster = false;
+      clone.masterId = undefined;
+      clone.masterObjectId = undefined;
+      clone.overridable = undefined;
+      
+      // Make selectable and interactive
+      clone.selectable = $activeTool === ToolType.SELECT;
+      clone.evented = true;
+      clone.hoverCursor = 'move';
+      clone.visible = true;
+      
+      // Restore full opacity
+      clone.opacity = 1;
+      
+      // For text objects, ensure they have proper event handlers
+      if (clone.type === 'textbox') {
+        if (!clone.linkedObjectIds) clone.linkedObjectIds = [];
+        clone.on('modified', () => updateTextFlow(clone));
+        clone.on('changed', () => updateTextFlow(clone));
+      }
+      
+      console.log("Adding cloned object to canvas");
+      
+      // Add to canvas
+      canvas.add(clone);
+      
+      // Remove the master object
+      canvas.remove(masterObject);
+      
+      // Mark as overridden in the current page
+      if ($currentPage && $currentDocument) {
+        const pageIndex = $currentDocument.pages.findIndex(p => p.id === $currentPage);
+        if (pageIndex >= 0) {
+          const updatedPages = [...$currentDocument.pages];
+          if (!updatedPages[pageIndex].overrides) {
+            updatedPages[pageIndex].overrides = {};
+          }
+          
+          updatedPages[pageIndex].overrides[masterObject.masterObjectId] = true;
+          
+          currentDocument.update(doc => ({
+            ...doc,
+            pages: updatedPages,
+            lastModified: new Date()
+          }));
+        }
+      }
+      
+      // Ensure visibility
+      canvas.setActiveObject(clone);
+      canvas.requestRenderAll();
+      canvas.renderAll();
+      
+      return clone;
+    } catch (err) {
+      console.error("Error overriding master object:", err);
+      return null;
     }
-    
-    canvas.renderAll();
-    
-    return clone;
   }
   
   // Export functions for external components
@@ -1464,6 +2188,571 @@
   
   export function getTextFlow() {
     return textFlow;
+  }
+  
+  /**
+   * Special recovery function to recreate objects from JSON when they're missing from canvas
+   * @param {string} pageJson - The JSON string containing object data
+   * @returns {number} Number of objects recreated
+   */
+  export function recoverObjectsFromJson(pageJson) {
+    if (!canvas) return 0;
+    
+    try {
+      console.log("RECOVERY: Attempting to recover objects from JSON");
+      
+      // Parse the JSON data
+      const jsonData = typeof pageJson === 'string' ? JSON.parse(pageJson) : pageJson;
+      const objectCount = jsonData.objects ? jsonData.objects.length : 0;
+      
+      if (objectCount === 0) {
+        console.log("RECOVERY: No objects in JSON to recover");
+        return 0;
+      }
+      
+      console.log(`RECOVERY: Attempting to recreate ${objectCount} objects from JSON`);
+      
+      // Clear the canvas first
+      canvas.clear();
+      canvas.backgroundColor = jsonData.background || 'white';
+      canvas.renderAll();
+      
+      // Track how many objects we successfully created
+      let createdCount = 0;
+      
+      // Create each object
+      jsonData.objects.forEach((objData, index) => {
+        let fabricObj = null;
+        
+        try {
+          // Determine object type
+          const objType = (objData.type || "").toLowerCase();
+          console.log(`RECOVERY: Creating object #${index} of type ${objType}`);
+          
+          // Create appropriate object based on type
+          switch (objType) {
+            case 'textbox':
+              fabricObj = new fabric.Textbox(objData.text || 'Text', {
+                left: objData.left || 100,
+                top: objData.top || 100,
+                width: objData.width || 200,
+                fontFamily: objData.fontFamily || 'Arial',
+                fontSize: objData.fontSize || 16,
+                fontWeight: objData.fontWeight || 'normal',
+                fontStyle: objData.fontStyle || 'normal',
+                textAlign: objData.textAlign || 'left',
+                fill: objData.fill || '#000000',
+                id: objData.id || generateId(),
+                angle: objData.angle || 0,
+                scaleX: objData.scaleX || 1,
+                scaleY: objData.scaleY || 1,
+                visible: true,
+                evented: true,
+                selectable: true,
+                opacity: 1
+              });
+              break;
+              
+            case 'rect':
+              fabricObj = new fabric.Rect({
+                left: objData.left || 100,
+                top: objData.top || 100,
+                width: objData.width || 100,
+                height: objData.height || 100,
+                fill: objData.fill || '#cccccc',
+                stroke: objData.stroke || '#000000',
+                strokeWidth: objData.strokeWidth || 1,
+                id: objData.id || generateId(),
+                angle: objData.angle || 0,
+                scaleX: objData.scaleX || 1,
+                scaleY: objData.scaleY || 1,
+                visible: true,
+                evented: true,
+                selectable: true,
+                opacity: 1
+              });
+              break;
+              
+            case 'ellipse':
+              fabricObj = new fabric.Ellipse({
+                left: objData.left || 100,
+                top: objData.top || 100,
+                rx: objData.rx || 50,
+                ry: objData.ry || 50,
+                fill: objData.fill || '#cccccc',
+                stroke: objData.stroke || '#000000',
+                strokeWidth: objData.strokeWidth || 1,
+                id: objData.id || generateId(),
+                angle: objData.angle || 0,
+                scaleX: objData.scaleX || 1,
+                scaleY: objData.scaleY || 1,
+                visible: true,
+                evented: true,
+                selectable: true,
+                opacity: 1
+              });
+              break;
+              
+            case 'line':
+              fabricObj = new fabric.Line([
+                objData.x1 || 0, 
+                objData.y1 || 0, 
+                objData.x2 || 100, 
+                objData.y2 || 100
+              ], {
+                stroke: objData.stroke || '#000000',
+                strokeWidth: objData.strokeWidth || 1,
+                id: objData.id || generateId(),
+                angle: objData.angle || 0,
+                scaleX: objData.scaleX || 1,
+                scaleY: objData.scaleY || 1,
+                visible: true,
+                evented: true, 
+                selectable: true,
+                opacity: 1
+              });
+              break;
+              
+            default:
+              console.log(`RECOVERY: Unsupported object type: ${objType}`);
+              return; // Skip this object
+          }
+          
+          // If object created successfully, add it to canvas
+          if (fabricObj) {
+            canvas.add(fabricObj);
+            createdCount++;
+          }
+        } catch (err) {
+          console.error(`RECOVERY: Error creating object #${index}:`, err);
+        }
+      });
+      
+      // Multiple force renders
+      canvas.requestRenderAll();
+      canvas.renderAll();
+      
+      // Delayed render for better reliability
+      setTimeout(() => {
+        canvas.requestRenderAll();
+        canvas.renderAll();
+      }, 100);
+      
+      console.log(`RECOVERY: Successfully recreated ${createdCount}/${objectCount} objects`);
+      return createdCount;
+    } catch (err) {
+      console.error("RECOVERY: Failed to recover objects:", err);
+      return 0;
+    }
+  }
+  
+  /**
+   * Implement snap-to-grid and snap-to-guides functionality
+   */
+  function setupSnapping() {
+    if (!canvas) return;
+    
+    // Object moving event
+    canvas.on('object:moving', function(e) {
+      const obj = e.target;
+      
+      // Skip snapping for master page objects
+      if (obj.fromMaster && !obj.overridden) return;
+      
+      // Check if grid snap is enabled
+      if ($currentDocument?.metadata?.grid?.snap) {
+        snapToGrid(obj);
+      }
+      
+      // Always snap to guides if they exist
+      snapToGuides(obj);
+      
+      // Create smart guides when objects align with each other
+      createSmartGuides(obj);
+    });
+    
+    // Object scaling event
+    canvas.on('object:scaling', function(e) {
+      const obj = e.target;
+      
+      // Skip snapping for master page objects
+      if (obj.fromMaster && !obj.overridden) return;
+      
+      // Only snap to grid during scaling if enabled
+      if ($currentDocument?.metadata?.grid?.snap) {
+        // Scaling snapping is more complex, as we'd need to snap all four corners
+        // This simplified version snaps the object center during scaling
+        const center = obj.getCenterPoint();
+        snapPointToGrid(center);
+        
+        // Update object position based on snapped center
+        obj.setPositionByOrigin(center, 'center', 'center');
+      }
+    });
+  }
+  
+  /**
+   * Snap an object to the grid
+   * @param {Object} obj - The Fabric.js object to snap
+   */
+  function snapToGrid(obj) {
+    // Bail out early if not mounted or server-side
+    if (!isMounted || typeof window === 'undefined') return;
+    
+    if (!$currentDocument?.metadata?.grid || !$currentDocument.metadata.grid.snap) return;
+    
+    const { size, snapThreshold, units = 'mm' } = $currentDocument.metadata.grid;
+    
+    // Fallback till standard pixelkonvertering om convertToPixels inte är laddad än
+    let gridSize;
+    if (convertToPixels) {
+      // Convert grid size from document units to pixels using our utility function
+      gridSize = convertToPixels(size, units);
+    } else {
+      // Fallback conversion (same as the original)
+      const pxPerMm = 3.78; // Approximate conversion at 96 DPI
+      gridSize = size * pxPerMm;
+    }
+    
+    // Get object bounds
+    const objBounds = obj.getBoundingRect();
+    
+    // Snap center point
+    const objCenter = {
+      x: objBounds.left + objBounds.width / 2,
+      y: objBounds.top + objBounds.height / 2
+    };
+    
+    // Snap horizontal position
+    let nearestGridX;
+    
+    if (snapToGridPoint) {
+      // Använd utility-funktionen om tillgänglig
+      nearestGridX = snapToGridPoint(objCenter.x, gridSize, snapThreshold);
+    } else {
+      // Fallback implementation (original code)
+      const nearestX = Math.round(objCenter.x / gridSize) * gridSize;
+      if (Math.abs(objCenter.x - nearestX) < snapThreshold) {
+        nearestGridX = nearestX;
+      } else {
+        nearestGridX = null;
+      }
+    }
+    
+    if (nearestGridX !== null) {
+      const deltaX = nearestGridX - objCenter.x;
+      obj.left += deltaX;
+      
+      // Show snap indicator
+      showSnapIndicator(nearestGridX, false);
+    }
+    
+    // Snap vertical position
+    let nearestGridY;
+    
+    if (snapToGridPoint) {
+      // Använd utility-funktionen om tillgänglig
+      nearestGridY = snapToGridPoint(objCenter.y, gridSize, snapThreshold);
+    } else {
+      // Fallback implementation (original code)
+      const nearestY = Math.round(objCenter.y / gridSize) * gridSize;
+      if (Math.abs(objCenter.y - nearestY) < snapThreshold) {
+        nearestGridY = nearestY;
+      } else {
+        nearestGridY = null;
+      }
+    }
+    
+    if (nearestGridY !== null) {
+      const deltaY = nearestGridY - objCenter.y;
+      obj.top += deltaY;
+      
+      // Show snap indicator
+      showSnapIndicator(nearestGridY, true);
+    }
+  }
+  
+  /**
+   * Snap a point to the grid
+   * @param {Object} point - The point {x,y} to snap
+   * @returns {Object} The snapped point
+   */
+  function snapPointToGrid(point) {
+    if (!$currentDocument?.metadata?.grid) return point;
+    
+    const { size, snapThreshold } = $currentDocument.metadata.grid;
+    
+    // Convert grid size from document units (mm) to pixels
+    const pxPerMm = 3.78; // Approximate conversion
+    const gridSize = size * pxPerMm;
+    
+    // Snap coordinates
+    const nearestGridX = Math.round(point.x / gridSize) * gridSize;
+    if (Math.abs(point.x - nearestGridX) < snapThreshold) {
+      point.x = nearestGridX;
+    }
+    
+    const nearestGridY = Math.round(point.y / gridSize) * gridSize;
+    if (Math.abs(point.y - nearestGridY) < snapThreshold) {
+      point.y = nearestGridY;
+    }
+    
+    return point;
+  }
+  
+  /**
+   * Snap objects to guides
+   * @param {Object} obj - The Fabric.js object to snap
+   */
+  function snapToGuides(obj) {
+    if (!canvas || !$currentDocument || !$currentPage) return;
+    
+    // Get current page guides
+    const currentPageObj = $currentDocument.pages.find(p => p.id === $currentPage);
+    if (!currentPageObj || !currentPageObj.guides) return;
+    
+    const snapThreshold = $currentDocument?.metadata?.grid?.snapThreshold || 5;
+    
+    // Get object bounds
+    const objBounds = obj.getBoundingRect();
+    
+    // Snap to horizontal guides
+    if (currentPageObj.guides.horizontal && currentPageObj.guides.horizontal.length > 0) {
+      currentPageObj.guides.horizontal.forEach(guideY => {
+        // Check if object's top edge is close to the guide
+        if (Math.abs(objBounds.top - guideY) < snapThreshold) {
+          // Snap top edge to guide
+          const delta = guideY - objBounds.top;
+          obj.top += delta;
+          
+          // Show snap indicator
+          showSnapIndicator(guideY, true);
+        } 
+        // Check if object's bottom edge is close to the guide
+        else if (Math.abs(objBounds.top + objBounds.height - guideY) < snapThreshold) {
+          // Snap bottom edge to guide
+          const delta = guideY - (objBounds.top + objBounds.height);
+          obj.top += delta;
+          
+          // Show snap indicator
+          showSnapIndicator(guideY, true);
+        } 
+        // Check if object's center is close to the guide
+        else if (Math.abs(objBounds.top + objBounds.height/2 - guideY) < snapThreshold) {
+          // Snap center to guide
+          const delta = guideY - (objBounds.top + objBounds.height/2);
+          obj.top += delta;
+          
+          // Show snap indicator
+          showSnapIndicator(guideY, true);
+        }
+      });
+    }
+    
+    // Snap to vertical guides
+    if (currentPageObj.guides.vertical && currentPageObj.guides.vertical.length > 0) {
+      currentPageObj.guides.vertical.forEach(guideX => {
+        // Check if object's left edge is close to the guide
+        if (Math.abs(objBounds.left - guideX) < snapThreshold) {
+          // Snap left edge to guide
+          const delta = guideX - objBounds.left;
+          obj.left += delta;
+          
+          // Show snap indicator
+          showSnapIndicator(guideX, false);
+        } 
+        // Check if object's right edge is close to the guide
+        else if (Math.abs(objBounds.left + objBounds.width - guideX) < snapThreshold) {
+          // Snap right edge to guide
+          const delta = guideX - (objBounds.left + objBounds.width);
+          obj.left += delta;
+          
+          // Show snap indicator
+          showSnapIndicator(guideX, false);
+        } 
+        // Check if object's center is close to the guide
+        else if (Math.abs(objBounds.left + objBounds.width/2 - guideX) < snapThreshold) {
+          // Snap center to guide
+          const delta = guideX - (objBounds.left + objBounds.width/2);
+          obj.left += delta;
+          
+          // Show snap indicator
+          showSnapIndicator(guideX, false);
+        }
+      });
+    }
+  }
+  
+  /**
+   * Shows a temporary visual indicator when an object snaps
+   * @param {number} position - The position of the snap indicator
+   * @param {boolean} isHorizontal - Whether the indicator is horizontal
+   */
+  function showSnapIndicator(position, isHorizontal) {
+    if (!canvas) return;
+    
+    // Remove any existing snap indicators
+    const existingIndicators = canvas.getObjects().filter(obj => obj.snapIndicator);
+    existingIndicators.forEach(indicator => canvas.remove(indicator));
+    
+    // Create a temporary snap indicator
+    const indicator = isHorizontal
+      ? new fabric.Line([0, position, width, position], {
+          stroke: '#ff3366',
+          strokeWidth: 1,
+          opacity: 0.8,
+          selectable: false,
+          evented: false,
+          snapIndicator: true,
+          excludeFromExport: true
+        })
+      : new fabric.Line([position, 0, position, height], {
+          stroke: '#ff3366',
+          strokeWidth: 1,
+          opacity: 0.8,
+          selectable: false,
+          evented: false,
+          snapIndicator: true,
+          excludeFromExport: true
+        });
+    
+    // Add to canvas
+    canvas.add(indicator);
+    
+    // Remove after a short delay
+    setTimeout(() => {
+      canvas.remove(indicator);
+      canvas.renderAll();
+    }, 500);
+  }
+  
+  /**
+   * Create smart guides when objects align with each other
+   * @param {Object} activeObj - The active object being moved/resized
+   */
+  function createSmartGuides(activeObj) {
+    if (!canvas) return;
+    
+    // Remove existing smart guides
+    const existingSmartGuides = canvas.getObjects().filter(obj => obj.smartGuide);
+    existingSmartGuides.forEach(guide => canvas.remove(guide));
+    
+    // Skip if only one object or no selection
+    if (!activeObj) return;
+    
+    // Get all other objects
+    const otherObjects = canvas.getObjects().filter(obj => 
+      obj !== activeObj && 
+      !obj.guide && 
+      !obj.gridElement && 
+      !obj.smartGuide &&
+      !obj.snapIndicator &&
+      obj.visible
+    );
+    
+    if (otherObjects.length === 0) return;
+    
+    // Get active object bounds
+    const activeBounds = activeObj.getBoundingRect();
+    const snapThreshold = $currentDocument?.metadata?.grid?.snapThreshold || 5;
+    
+    // Check for alignments with other objects
+    otherObjects.forEach(otherObj => {
+      const otherBounds = otherObj.getBoundingRect();
+      
+      // Check for horizontal alignment (tops, centers, bottoms)
+      // Top edges alignment
+      checkAlignment(
+        activeBounds.top, 
+        otherBounds.top, 
+        true, 
+        'top-alignment'
+      );
+      
+      // Center alignment
+      checkAlignment(
+        activeBounds.top + activeBounds.height/2, 
+        otherBounds.top + otherBounds.height/2, 
+        true, 
+        'center-alignment'
+      );
+      
+      // Bottom edges alignment
+      checkAlignment(
+        activeBounds.top + activeBounds.height, 
+        otherBounds.top + otherBounds.height, 
+        true, 
+        'bottom-alignment'
+      );
+      
+      // Check for vertical alignment (lefts, centers, rights)
+      // Left edges alignment
+      checkAlignment(
+        activeBounds.left, 
+        otherBounds.left, 
+        false, 
+        'left-alignment'
+      );
+      
+      // Center alignment
+      checkAlignment(
+        activeBounds.left + activeBounds.width/2, 
+        otherBounds.left + otherBounds.width/2, 
+        false, 
+        'center-alignment'
+      );
+      
+      // Right edges alignment
+      checkAlignment(
+        activeBounds.left + activeBounds.width, 
+        otherBounds.left + otherBounds.width, 
+        false, 
+        'right-alignment'
+      );
+    });
+    
+    // Check for alignment and create guide if aligned
+    function checkAlignment(pos1, pos2, isHorizontal, type) {
+      if (Math.abs(pos1 - pos2) < snapThreshold) {
+        // Create smart guide
+        const guide = isHorizontal
+          ? new fabric.Line([0, pos2, width, pos2], {
+              stroke: '#00cc00',
+              strokeWidth: 1,
+              strokeDashArray: [4, 4],
+              selectable: false,
+              evented: false,
+              smartGuide: true,
+              alignmentType: type,
+              excludeFromExport: true
+            })
+          : new fabric.Line([pos2, 0, pos2, height], {
+              stroke: '#00cc00',
+              strokeWidth: 1,
+              strokeDashArray: [4, 4],
+              selectable: false,
+              evented: false,
+              smartGuide: true,
+              alignmentType: type,
+              excludeFromExport: true
+            });
+        
+        canvas.add(guide);
+        
+        // Make sure it's above content but below UI elements
+        // Use canvas.bringForward several times instead of moveTo
+        for (let i = 0; i < 10; i++) {
+          canvas.bringForward(guide);
+        }
+        
+        // Snap the object to align perfectly
+        if (isHorizontal) {
+          activeObj.top += (pos2 - pos1);
+        } else {
+          activeObj.left += (pos2 - pos1);
+        }
+      }
+    }
   }
   
   /**
@@ -1486,9 +2775,355 @@
   }
   
   /**
-   * Export saveCurrentPage function to allow external components to trigger saves
+   * Save a specific page's content without changing the current page
+   * @param {string} pageId - ID of the page to save
+   * @param {Array} objects - Canvas objects to save
    */
-  export { saveCurrentPage };
+  function saveSpecificPage(pageId, objects) {
+    if (!pageId) {
+      console.warn("Cannot save specific page: No page ID provided");
+      return;
+    }
+    
+    if (!$currentDocument) {
+      console.warn(`Cannot save specific page ${pageId}: No current document`);
+      return;
+    }
+    
+    // Get the index of the page to save
+    let pageIndexToSave = $currentDocument.pages.findIndex(p => p.id === pageId);
+    if (pageIndexToSave < 0) {
+      console.warn(`Cannot save specific page ${pageId}: Page not found in document`);
+      return;
+    }
+    
+    try {
+      console.log(`Saving specific page ${pageId} directly with ${objects.length} objects`);
+      
+      // If no objects, save minimal state
+      if (objects.length === 0) {
+        const emptyCanvasJSON = JSON.stringify({
+          "version": "4.6.0",
+          "objects": [],
+          "background": "white"
+        });
+        
+        // Update document with empty canvas
+        const updatedPages = [...$currentDocument.pages];
+        updatedPages[pageIndexToSave] = {
+          ...updatedPages[pageIndexToSave],
+          canvasJSON: emptyCanvasJSON,
+          masterPageId: updatedPages[pageIndexToSave].masterPageId,
+          overrides: updatedPages[pageIndexToSave].overrides || {}
+        };
+        
+        // Update the store
+        currentDocument.update(doc => ({
+          ...doc,
+          pages: updatedPages,
+          lastModified: new Date()
+        }));
+        
+        console.log(`Saved empty page ${pageId}`);
+        return;
+      }
+      
+      // Create canvas-like object with toJSON method
+      const tempCanvas = {
+        _objects: objects,
+        backgroundColor: 'white',
+        toJSON: function(propertiesToInclude) {
+          return {
+            version: "4.6.0",
+            objects: this._objects.map(obj => obj.toJSON(propertiesToInclude)),
+            background: this.backgroundColor
+          };
+        }
+      };
+      
+      // Serialize with custom properties
+      const canvasData = tempCanvas.toJSON([
+        'id', 
+        'linkedObjectIds', 
+        'fromMaster', 
+        'masterId', 
+        'masterObjectId', 
+        'overridable'
+      ]);
+      
+      // Verify objects in the JSON match what we expect
+      const jsonObjectCount = canvasData.objects ? canvasData.objects.length : 0;
+      console.log(`JSON has ${jsonObjectCount} objects (expected ${objects.length})`);
+      
+      // Stringify
+      const canvasJSON = JSON.stringify(canvasData);
+      console.log(`Serialized JSON for page ${pageId}: ${canvasJSON.length} characters`);
+      
+      // Create updated page object
+      const updatedPages = [...$currentDocument.pages];
+      updatedPages[pageIndexToSave] = {
+        ...updatedPages[pageIndexToSave],
+        canvasJSON: canvasJSON,
+        masterPageId: updatedPages[pageIndexToSave].masterPageId,
+        overrides: updatedPages[pageIndexToSave].overrides || {}
+      };
+      
+      // Update the store
+      currentDocument.update(doc => ({
+        ...doc,
+        pages: updatedPages,
+        lastModified: new Date()
+      }));
+      
+      console.log(`Page ${pageId} saved successfully with ${objects.length} objects`);
+    } catch (err) {
+      console.error(`Error saving specific page ${pageId}:`, err);
+      throw err;
+    }
+  }
+
+  /**
+   * Manual object creation function
+   * Creates Fabric.js objects directly from JSON data without relying on loadFromJSON
+   * @param {Array} objectsData - Array of object data from JSON
+   * @returns {Array} Array of created Fabric.js objects
+   */
+  function createObjectsManually(objectsData) {
+    if (!objectsData || !Array.isArray(objectsData)) {
+      console.error("Invalid objects data:", objectsData);
+      return [];
+    }
+    
+    console.log(`Creating ${objectsData.length} objects manually`);
+    const createdObjects = [];
+    
+    // Process each object in the JSON data
+    objectsData.forEach((objData, index) => {
+      try {
+        // Create different types of objects based on their 'type' property
+        const objType = (objData.type || "").toLowerCase();
+        let fabricObj = null;
+        
+        console.log(`Creating object #${index} of type: ${objType}`);
+        
+        switch (objType) {
+          case 'textbox':
+            fabricObj = new fabric.Textbox(objData.text || 'Text', {
+              left: objData.left || 100,
+              top: objData.top || 100,
+              width: objData.width || 200,
+              fontFamily: objData.fontFamily || 'Arial',
+              fontSize: objData.fontSize || 16,
+              fontStyle: objData.fontStyle || 'normal',
+              fontWeight: objData.fontWeight || 'normal',
+              textAlign: objData.textAlign || 'left',
+              fill: objData.fill || '#000000',
+              angle: objData.angle || 0,
+              scaleX: objData.scaleX || 1,
+              scaleY: objData.scaleY || 1,
+              id: objData.id || generateId(),
+              linkedObjectIds: objData.linkedObjectIds || []
+            });
+            break;
+            
+          case 'rect':
+            fabricObj = new fabric.Rect({
+              left: objData.left || 100,
+              top: objData.top || 100,
+              width: objData.width || 100,
+              height: objData.height || 100,
+              fill: objData.fill || '#cccccc',
+              stroke: objData.stroke || '#000000',
+              strokeWidth: objData.strokeWidth || 1,
+              rx: objData.rx || 0,
+              ry: objData.ry || 0,
+              angle: objData.angle || 0,
+              scaleX: objData.scaleX || 1,
+              scaleY: objData.scaleY || 1,
+              id: objData.id || generateId()
+            });
+            break;
+            
+          case 'circle':
+            fabricObj = new fabric.Circle({
+              left: objData.left || 100,
+              top: objData.top || 100,
+              radius: objData.radius || 50,
+              fill: objData.fill || '#cccccc',
+              stroke: objData.stroke || '#000000',
+              strokeWidth: objData.strokeWidth || 1,
+              angle: objData.angle || 0,
+              scaleX: objData.scaleX || 1,
+              scaleY: objData.scaleY || 1,
+              id: objData.id || generateId()
+            });
+            break;
+            
+          case 'ellipse':
+            fabricObj = new fabric.Ellipse({
+              left: objData.left || 100,
+              top: objData.top || 100,
+              rx: objData.rx || 50,
+              ry: objData.ry || 50,
+              fill: objData.fill || '#cccccc',
+              stroke: objData.stroke || '#000000',
+              strokeWidth: objData.strokeWidth || 1,
+              angle: objData.angle || 0,
+              scaleX: objData.scaleX || 1,
+              scaleY: objData.scaleY || 1,
+              id: objData.id || generateId()
+            });
+            break;
+            
+          case 'line':
+            fabricObj = new fabric.Line([
+              objData.x1 || 0, 
+              objData.y1 || 0, 
+              objData.x2 || 100, 
+              objData.y2 || 100
+            ], {
+              left: objData.left || 0,
+              top: objData.top || 0,
+              stroke: objData.stroke || '#000000',
+              strokeWidth: objData.strokeWidth || 1,
+              angle: objData.angle || 0,
+              scaleX: objData.scaleX || 1,
+              scaleY: objData.scaleY || 1,
+              id: objData.id || generateId()
+            });
+            break;
+            
+          case 'polygon':
+            if (objData.points && Array.isArray(objData.points)) {
+              fabricObj = new fabric.Polygon(objData.points, {
+                left: objData.left || 0,
+                top: objData.top || 0,
+                fill: objData.fill || '#cccccc',
+                stroke: objData.stroke || '#000000',
+                strokeWidth: objData.strokeWidth || 1,
+                angle: objData.angle || 0,
+                scaleX: objData.scaleX || 1,
+                scaleY: objData.scaleY || 1,
+                id: objData.id || generateId()
+              });
+            }
+            break;
+            
+          case 'polyline':
+            if (objData.points && Array.isArray(objData.points)) {
+              fabricObj = new fabric.Polyline(objData.points, {
+                left: objData.left || 0,
+                top: objData.top || 0,
+                fill: objData.fill || 'transparent',
+                stroke: objData.stroke || '#000000',
+                strokeWidth: objData.strokeWidth || 1,
+                angle: objData.angle || 0,
+                scaleX: objData.scaleX || 1,
+                scaleY: objData.scaleY || 1,
+                id: objData.id || generateId()
+              });
+            }
+            break;
+            
+          case 'path':
+            if (objData.path) {
+              fabricObj = new fabric.Path(objData.path, {
+                left: objData.left || 0,
+                top: objData.top || 0,
+                fill: objData.fill || 'transparent',
+                stroke: objData.stroke || '#000000',
+                strokeWidth: objData.strokeWidth || 1,
+                angle: objData.angle || 0,
+                scaleX: objData.scaleX || 1,
+                scaleY: objData.scaleY || 1,
+                id: objData.id || generateId()
+              });
+            }
+            break;
+            
+          case 'image':
+            // For images, we need a special approach with fabric.Image.fromURL
+            // Store this for special handling after creating other objects
+            console.log("Image object detected, will handle separately");
+            break;
+            
+          case 'group':
+            // For groups, we need to create the objects inside first
+            if (objData.objects && Array.isArray(objData.objects)) {
+              const groupObjects = createObjectsManually(objData.objects);
+              if (groupObjects.length > 0) {
+                fabricObj = new fabric.Group(groupObjects, {
+                  left: objData.left || 0,
+                  top: objData.top || 0,
+                  angle: objData.angle || 0,
+                  scaleX: objData.scaleX || 1,
+                  scaleY: objData.scaleY || 1,
+                  id: objData.id || generateId()
+                });
+              }
+            }
+            break;
+            
+          default:
+            console.log(`Unrecognized object type: ${objType}`);
+            break;
+        }
+        
+        // If we successfully created an object, set additional properties from the data
+        if (fabricObj) {
+          // Ensure critical properties are set
+          fabricObj.visible = true;
+          fabricObj.evented = true;
+          fabricObj.selectable = $activeTool === ToolType.SELECT;
+          fabricObj.opacity = objData.opacity !== undefined ? objData.opacity : 1;
+          
+          // Copy master page properties if present
+          if (objData.fromMaster) {
+            fabricObj.fromMaster = true;
+            fabricObj.masterId = objData.masterId;
+            fabricObj.masterObjectId = objData.masterObjectId;
+            fabricObj.overridable = objData.overridable !== false; // Default to true
+            fabricObj.selectable = false;
+            fabricObj.hoverCursor = 'not-allowed';
+          }
+          
+          // Copy other custom properties
+          const standardProps = [
+            'type', 'left', 'top', 'width', 'height', 'radius', 'rx', 'ry',
+            'fill', 'stroke', 'strokeWidth', 'angle', 'scaleX', 'scaleY',
+            'opacity', 'text', 'fontFamily', 'fontSize', 'fontWeight',
+            'fontStyle', 'textAlign', 'x1', 'y1', 'x2', 'y2', 'points', 'path'
+          ];
+          
+          // Copy any remaining properties
+          Object.keys(objData).forEach(key => {
+            if (!standardProps.includes(key) && key !== 'objects') {
+              fabricObj[key] = objData[key];
+            }
+          });
+          
+          // Add text flow event handlers for textbox objects
+          if (objType === 'textbox' && textFlow) {
+            fabricObj.on('modified', () => updateTextFlow(fabricObj));
+            fabricObj.on('changed', () => updateTextFlow(fabricObj));
+          }
+          
+          createdObjects.push(fabricObj);
+          console.log(`Successfully created ${objType} object`);
+        }
+      } catch (err) {
+        console.error(`Error creating object #${index}:`, err);
+      }
+    });
+    
+    console.log(`Created ${createdObjects.length}/${objectsData.length} objects manually`);
+    return createdObjects;
+  }
+
+  /**
+   * Export save functions to allow external components to trigger saves
+   */
+  export { saveCurrentPage, saveSpecificPage };
   
   // Undo/redo functions now defined above
   
@@ -1535,7 +3170,46 @@
 </script>
 
 <div class="canvas-wrapper relative overflow-hidden">
-  <div class="canvas-container flex items-center justify-center p-8">
+  <!-- Ruler corner square where rulers meet -->
+  {#if showRulers}
+    <div class="ruler-corner" style="width: {rulerOffset}px; height: {rulerOffset}px; z-index: 2;"></div>
+  {/if}
+  
+  <!-- Horizontal ruler -->
+  {#if showHorizontalRuler}
+    <div class="horizontal-ruler-container" style="left: {showVerticalRuler ? rulerOffset : 0}px; right: 0; top: 0; height: {rulerOffset}px; z-index: 1;">
+      <HorizontalRuler 
+        width={width} 
+        offsetX={canvasScrollX} 
+        scale={zoomLevel}
+        on:createGuide={handleCreateGuide}
+        on:updateGuide={handleUpdateGuide}
+        on:deleteGuide={handleDeleteGuide}
+      />
+    </div>
+  {/if}
+  
+  <!-- Vertical ruler -->
+  {#if showVerticalRuler}
+    <div class="vertical-ruler-container" style="top: {showHorizontalRuler ? rulerOffset : 0}px; bottom: 0; left: 0; width: {rulerOffset}px; z-index: 1;">
+      <VerticalRuler 
+        height={height} 
+        offsetY={canvasScrollY} 
+        scale={zoomLevel} 
+        on:createGuide={handleCreateGuide}
+        on:updateGuide={handleUpdateGuide}
+        on:deleteGuide={handleDeleteGuide}
+      />
+    </div>
+  {/if}
+  
+  <!-- Canvas container -->
+  <div 
+    class="canvas-container flex items-center justify-center p-8"
+    bind:this={canvasContainer}
+    on:scroll={handleScroll}
+    style="left: {showVerticalRuler ? rulerOffset : 0}px; top: {showHorizontalRuler ? rulerOffset : 0}px; right: 0; bottom: 0; position: absolute;"
+  >
     <div class="canvas-paper shadow-lg">
       <canvas 
         bind:this={canvasElement} 
@@ -1569,6 +3243,12 @@
 />
 
 <style>
+  .canvas-wrapper {
+    width: 100%;
+    height: 100%;
+    position: relative;
+  }
+  
   .canvas-container {
     width: 100%;
     height: 100%;
@@ -1578,5 +3258,24 @@
   
   .canvas-paper {
     display: inline-block;
+  }
+  
+  .ruler-corner {
+    position: absolute;
+    top: 0;
+    left: 0;
+    background-color: #e0e0e0;
+    border-right: 1px solid #ccc;
+    border-bottom: 1px solid #ccc;
+  }
+  
+  .horizontal-ruler-container {
+    position: absolute;
+    overflow: hidden;
+  }
+  
+  .vertical-ruler-container {
+    position: absolute;
+    overflow: hidden;
   }
 </style>

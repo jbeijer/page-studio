@@ -124,7 +124,7 @@ Denna tasklista ger en nedbrytning av alla konkreta arbetsuppgifter som behöver
 - [ ] Utveckla panoreringsverktyg (4 timmar) - **PRIO: HÖG**
 - [ ] Skapa avancerade markeringsverktyg (gruppering) (4 timmar) - **PRIO: MEDIUM**
 - [ ] Förbättra användargränssnittet baserat på feedback (8 timmar) - **PRIO: HÖG**
-- [ ] Fixa buggar och edge-cases (16 timmar) - **PRIO: HÖG**
+- [x] Fixa buggar och edge-cases (16 timmar) - **PRIO: HÖG**
 
 ## Testning & Lansering
 

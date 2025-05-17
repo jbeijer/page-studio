@@ -150,7 +150,25 @@ Dessutom har vi nu slutfört implementationen av dokumentlagringsfunktionalitete
 4. Automatisk sparfunktionalitet i editorn
 5. Avancerad JSON-serialisering av Canvas-objekt med bevarande av textflödesrelationer
 
-## Identifierade utmaningar
+## Nyligen lösta utmaningar
+
+### Sidbytesbuggen åtgärdad
+Vi har löst ett kritiskt problem som gjorde att objekt försvann när användare bytte mellan sidor i editorn. Lösningen omfattar:
+
+1. **Direkt IndexedDB-åtkomst**: En ny funktion `loadDocumentFromIndexedDB` som bypasser Svelte stores för att alltid hämta senaste data
+2. **Manuell objektskapning**: En egen implementation av objektskapning som inte förlitar sig på Fabric.js problematiska `loadFromJSON`-funktion 
+3. **Förbättrat sidbytesflöde**: Uppdaterad logik som garanterar korrekt sparning innan sidbyte och korrekt laddning efter
+4. **Detaljerad loggning**: Omfattande loggning för att underlätta felsökning och verifiering
+5. **Promise-baserad laddning**: Konverterat sidladdningsfunktionen till att returnera ett Promise för bättre flödeskontroll
+
+### Fabric.js import-syntaxen korrigerad
+Vi har åtgärdat importerna av Fabric.js-biblioteket för att säkerställa att det används korrekt i hela applikationen:
+
+```javascript 
+import * as fabric from 'fabric';
+```
+
+## Återstående utmaningar
 
 1. **Svelte 5 kompatibilitet** - Vi har stött på några utmaningar med Svelte 5 och testning som behöver lösas för att få stabil testinfrastruktur.
 

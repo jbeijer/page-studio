@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { activeTool, ToolType, setActiveTool } from '$lib/stores/toolbar';
   import Canvas from './Canvas.svelte';
+  import GridConfigPanel from './GridConfigPanel.svelte';
   
   // References to functions to be obtained from Canvas component instance
   let getCanvas;
@@ -17,6 +18,9 @@
   
   // Initialize canvas component reference
   let canvasComponent;
+  
+  // State for grid config panel
+  let showGridConfig = false;
   
   // Map of tool types to their icons and tooltips
   const toolConfig = {
@@ -499,6 +503,24 @@
       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM13 10H7" />
     </svg>
   </button>
+  
+  <button 
+    class="tool-button {showGridConfig ? 'tool-button-active' : ''}" 
+    title="Grid & Guides" 
+    data-testid="tool-grid" 
+    aria-label="Grid & Guides"
+    on:click={() => showGridConfig = !showGridConfig}
+  >
+    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5v14M9 5v14M14 5v14M19 5v14M4 9h15M4 14h15" />
+    </svg>
+  </button>
+  
+  {#if showGridConfig}
+    <div class="grid-config-wrapper">
+      <GridConfigPanel />
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -561,5 +583,13 @@
     width: 100%;
     align-items: center;
     gap: 0.5rem;
+  }
+  
+  .grid-config-wrapper {
+    position: absolute;
+    left: 4.5rem;
+    bottom: 4rem;
+    z-index: 10;
+    width: 18rem;
   }
 </style>

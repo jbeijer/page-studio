@@ -1,6 +1,5 @@
 <script>
   import { onMount } from 'svelte';
-  import { page } from '$app/stores';
   import Canvas from '$lib/components/Editor/Canvas.svelte';
   import Toolbar from '$lib/components/Editor/Toolbar.svelte';
   import TextEditingPanel from '$lib/components/Editor/TextEditingPanel.svelte';
@@ -9,6 +8,12 @@
   import { activeTool, ToolType, updateToolOptions } from '$lib/stores/toolbar';
   import { saveDocument, loadDocument } from '$lib/utils/storage';
   import { goto } from '$app/navigation';
+  
+  // För att undvika SSR-problem
+  import { browser } from '$app/environment';
+  
+  // Skapa en tom +page.server.js för att undvika server-rendering av denna sida
+  export const ssr = false;
   
   let canvasComponent;
   let selectedObject = null;
@@ -58,8 +63,9 @@
     
     // Get current objects on canvas for logging
     let objectsCount = 0;
+    let canvas = null;
     if (canvasComponent && canvasComponent.getCanvas) {
-      const canvas = canvasComponent.getCanvas();
+      canvas = canvasComponent.getCanvas();
       if (canvas) {
         const objects = canvas.getObjects();
         objectsCount = objects.length;
@@ -76,36 +82,75 @@
       canvasComponent.saveCurrentPage();
     }
     
+    // Important - save the current document state into a local variable to prevent
+    // changes during the save operation
+    const docToSave = JSON.parse(JSON.stringify($currentDocument));
+    
     // Save document to IndexedDB with verification
     try {
-      const savedId = await saveDocument($currentDocument);
+      const savedId = await saveDocument(docToSave);
       console.log(`Force Save: Document ${savedId} saved to IndexedDB`);
       
       // Verify by loading it back
       const verifyDoc = await loadDocument(savedId);
       console.log(`Force Save: Verification loaded document with ${verifyDoc.pages.length} pages`);
       
-      // Check pages data
+      // Scan all pages, not just current one
+      let totalObjectsInDB = 0;
+      let pagesWithObjects = 0;
+      
+      // Check pages data for all pages
       if (verifyDoc.pages && verifyDoc.pages.length > 0) {
-        const currentPageIndex = verifyDoc.pages.findIndex(p => p.id === $currentPage);
-        if (currentPageIndex >= 0) {
-          const pageData = verifyDoc.pages[currentPageIndex];
-          if (pageData.canvasJSON) {
+        verifyDoc.pages.forEach((page, pageIndex) => {
+          if (page.canvasJSON) {
             try {
-              const jsonData = JSON.parse(pageData.canvasJSON);
+              const jsonData = JSON.parse(page.canvasJSON);
               const jsonObjectCount = jsonData.objects ? jsonData.objects.length : 0;
-              console.log(`Force Save: Current page has ${jsonObjectCount} objects in saved data (Canvas has ${objectsCount})`);
+              console.log(`Force Save: Page ${page.id} has ${jsonObjectCount} objects in saved data`);
               
-              if (jsonObjectCount !== objectsCount) {
-                console.warn(`Force Save: Object count mismatch - canvas has ${objectsCount} but saved JSON has ${jsonObjectCount}`);
+              if (jsonObjectCount > 0) {
+                totalObjectsInDB += jsonObjectCount;
+                pagesWithObjects++;
+              }
+              
+              // Check current page specifically
+              if (page.id === $currentPage) {
+                console.log(`Force Save: Current page ${page.id} has ${jsonObjectCount} objects in saved data (Canvas has ${objectsCount})`);
+                
+                if (jsonObjectCount !== objectsCount) {
+                  console.warn(`Force Save: Object count mismatch - canvas has ${objectsCount} but saved JSON has ${jsonObjectCount}`);
+                  
+                  // Handle the mismatch by forcing reload if canvas is empty but JSON has objects
+                  if (objectsCount === 0 && jsonObjectCount > 0) {
+                    console.log("Force Save: Canvas is empty but JSON has objects, forcing reload");
+                    
+                    // Use the recovery function from the Canvas component
+                    if (canvasComponent && canvasComponent.recoverObjectsFromJson) {
+                      const recoveredCount = canvasComponent.recoverObjectsFromJson(page.canvasJSON);
+                      console.log(`Force Save: Recovered ${recoveredCount} objects using Canvas recovery function`);
+                      
+                      // Update saved page to reflect fixes
+                      if (recoveredCount > 0 && canvasComponent.saveCurrentPage) {
+                        setTimeout(() => {
+                          console.log("Force Save: Saving recovered objects");
+                          canvasComponent.saveCurrentPage();
+                        }, 300);
+                      }
+                    } else {
+                      console.error("Force Save: Canvas recovery function not available");
+                    }
+                  }
+                }
               }
             } catch (err) {
-              console.error("Force Save: Error parsing saved JSON:", err);
+              console.error(`Force Save: Error parsing saved JSON for page ${page.id}:`, err);
             }
           } else {
-            console.warn("Force Save: Current page has no canvasJSON in saved document");
+            console.warn(`Force Save: Page ${page.id} has no canvasJSON in saved document`);
           }
-        }
+        });
+        
+        console.log(`Force Save: Document has ${verifyDoc.pages.length} pages, ${pagesWithObjects} pages with objects, ${totalObjectsInDB} total objects`);
       }
       
       return true;
@@ -143,7 +188,19 @@
     // Force save at specific intervals (to ensure we don't lose data)
     setInterval(forceSave, 15000); // Save every 15 seconds
     
-    const docId = $page.url.searchParams.get('id');
+    // Skaffa document ID från URL, endast på klientsidan
+    let docId = null;
+    
+    if (browser && typeof window !== 'undefined') {
+      try {
+        // Vi är i en webbläsare, använd URLSearchParams API direkt
+        const urlParams = new URLSearchParams(window.location.search);
+        docId = urlParams.get('id');
+        console.log("Got document ID from URL:", docId);
+      } catch (err) {
+        console.error("Failed to get document ID from URL:", err);
+      }
+    }
     
     if (docId) {
       // Try to load an existing document
@@ -172,11 +229,50 @@
           }
         });
         
-        // Set the document in the store
-        setCurrentDocument(loadedDocument);
-        documentTitle = loadedDocument.title;
+        // IMPORTANT: Delay document loading to ensure the canvas is fully initialized
+        console.log("Delaying document loading to ensure canvas is fully initialized");
         
-        // Wait for components to initialize before checking canvas
+        // First set a blank document to initialize components
+        setCurrentDocument({
+          id: 'temp-doc',
+          title: 'Loading...',
+          pages: [{
+            id: 'loading-page',
+            canvasJSON: JSON.stringify({
+              version: "4.6.0",
+              objects: [],
+              background: "white"
+            })
+          }],
+          masterPages: [],
+          created: new Date(),
+          lastModified: new Date(),
+          format: 'A4',
+          metadata: {
+            pageSize: { width: 210, height: 297 }
+          }
+        });
+        
+        // Then set the actual document after a delay
+        setTimeout(() => {
+          console.log("Now setting the actual document after canvas initialization");
+          setCurrentDocument(loadedDocument);
+          documentTitle = loadedDocument.title;
+          
+          // Force canvas refresh after another small delay
+          setTimeout(() => {
+            if (canvasComponent && canvasComponent.getCanvas) {
+              const canvas = canvasComponent.getCanvas();
+              if (canvas) {
+                console.log("Forcing extra canvas refresh");
+                canvas.requestRenderAll();
+                canvas.renderAll();
+              }
+            }
+          }, 200);
+        }, 500);
+        
+        // Wait for components to initialize before checking canvas and force multiple render cycles
         setTimeout(() => {
           if (canvasComponent && canvasComponent.getCanvas) {
             const canvas = canvasComponent.getCanvas();
@@ -184,9 +280,76 @@
               const objects = canvas.getObjects();
               console.log(`Currently ${objects.length} objects visible on canvas after loading`);
               
-              if (objects.length > 0) {
-                console.log(`Visible object types:`, objects.map(obj => obj.type));
+              // Even if no objects are visible, we'll try to create them from saved data
+              if (loadedDocument && loadedDocument.pages && loadedDocument.pages.length > 0 && $currentPage) {
+                // Find current page data
+                const curPageData = loadedDocument.pages.find(p => p.id === $currentPage);
+                if (curPageData && curPageData.canvasJSON) {
+                  try {
+                    // Parse JSON data
+                    const jsonData = JSON.parse(curPageData.canvasJSON);
+                    const jsonObjectCount = jsonData.objects ? jsonData.objects.length : 0;
+                    
+                    console.log(`Current page JSON has ${jsonObjectCount} objects that should be visible`);
+                    
+                    // If canvas is empty but we should have objects, force recreate them
+                    if (objects.length === 0 && jsonObjectCount > 0) {
+                      console.log("CRITICAL: Objects missing from canvas. Forcing recreation from JSON.");
+                      
+                      // Use the recovery function from the Canvas component
+                      if (canvasComponent && canvasComponent.recoverObjectsFromJson) {
+                        const recoveredCount = canvasComponent.recoverObjectsFromJson(curPageData.canvasJSON);
+                        console.log(`Recovered ${recoveredCount} objects using Canvas recovery function`);
+                        
+                        // Update saved page to reflect fixes
+                        if (recoveredCount > 0 && canvasComponent.saveCurrentPage) {
+                          setTimeout(() => {
+                            console.log("Saving recovered objects");
+                            canvasComponent.saveCurrentPage();
+                          }, 300);
+                        }
+                      } else {
+                        console.error("Canvas recovery function not available");
+                      }
+                    }
+                  } catch (err) {
+                    console.error("Error parsing page JSON:", err);
+                  }
+                }
               }
+              
+              // Make sure all objects are correctly configured for visibility
+              canvas.getObjects().forEach(obj => {
+                // Ensure all objects have critical visibility properties set
+                obj.visible = true;
+                obj.evented = true;
+                obj.selectable = $activeTool === ToolType.SELECT;
+                obj.opacity = obj.opacity === 0 ? 1 : obj.opacity;
+              });
+              
+              // Render multiple times with delays to ensure visibility
+              canvas.requestRenderAll();
+              canvas.renderAll();
+              
+              // Additional render cycles
+              setTimeout(() => {
+                console.log("First delayed render cycle");
+                canvas.requestRenderAll();
+                canvas.renderAll();
+                
+                setTimeout(() => {
+                  console.log("Second delayed render cycle");
+                  canvas.requestRenderAll();
+                  canvas.renderAll();
+                  
+                  // Final verification
+                  const finalObjects = canvas.getObjects();
+                  console.log(`After delayed render cycles: ${finalObjects.length} objects on canvas`);
+                  finalObjects.forEach((obj, idx) => {
+                    console.log(`Object #${idx}: type=${obj.type}, visible=${obj.visible}, evented=${obj.evented}, selectable=${obj.selectable}`);
+                  });
+                }, 500);
+              }, 500);
             } else {
               console.warn("Canvas instance not available after loading document");
             }

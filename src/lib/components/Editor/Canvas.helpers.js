@@ -1,4 +1,5 @@
 // Helper functions for Canvas component
+import * as fabric from 'fabric';
 
 /**
  * Create a wrapper around Canvas layer management functions

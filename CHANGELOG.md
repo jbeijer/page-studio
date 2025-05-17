@@ -49,6 +49,10 @@ och projektet följer [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - TailwindCSS-konfigurationen för kompatibilitet med Svelte 5
 - Event-attribut syntax i Svelte-komponenter för att följa Svelte 5-standard
 - Tillgänglighetsproblem i knappar utan textinnehåll
+- Problem med objekt som försvinner vid sidbyte i canvas-editorn
+- Fabric.js import-syntaxen för korrekt användning av biblioteket
+- Objekt-persistens vid sidbyte genom implementation av en mer robust laddningsmekanism
+- Direkt IndexedDB-åtkomst för att säkerställa att senaste data alltid används
 
 ## [0.1.0] - 2025-05-17
 ### Added

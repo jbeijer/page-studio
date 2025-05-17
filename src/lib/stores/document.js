@@ -46,7 +46,11 @@ export function createDocument({
       id: `page-${i + 1}`,
       canvasJSON: null,
       masterPageId: null,
-      overrides: {}
+      overrides: {},
+      guides: {
+        horizontal: [], // Array of y-positions for horizontal guides
+        vertical: []    // Array of x-positions for vertical guides
+      }
     });
   }
   
@@ -69,7 +73,24 @@ export function createDocument({
         left: 20
       },
       columns: 1,
-      columnGap: 10
+      columnGap: 10,
+      grid: {
+        enabled: false,
+        size: 10, // Grid size in mm
+        color: '#CCCCCC',
+        opacity: 0.5,
+        snap: false,
+        snapThreshold: 5, // How close objects need to be to snap (in px)
+        subdivisions: 2 // Number of subdivisions between main grid lines
+      },
+      rulers: {
+        enabled: true,
+        horizontalVisible: true,
+        verticalVisible: true,
+        units: 'mm', // 'mm', 'cm', 'inch', 'px'
+        color: '#666666',
+        showNumbers: true
+      }
     },
     pages,
     masterPages: [],
@@ -134,7 +155,11 @@ export function addPage(masterPageId = null) {
       id: newPageId,
       canvasJSON: null, // Empty canvas for new pages
       masterPageId: masterPageId, // Apply master page if specified
-      overrides: {}
+      overrides: {},
+      guides: {
+        horizontal: [], // Array of y-positions for horizontal guides
+        vertical: []    // Array of x-positions for vertical guides
+      }
     };
     
     // If masterPageId is provided, check if it exists

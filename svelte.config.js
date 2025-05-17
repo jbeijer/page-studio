@@ -4,7 +4,11 @@ import adapter from '@sveltejs/adapter-auto';
 const config = {
   kit: {
     adapter: adapter(),
-    // Add any other kit config here
+    
+    // Minimal configuration to avoid issues
+    alias: {
+      '$lib': './src/lib'
+    }
   }
 };
 
