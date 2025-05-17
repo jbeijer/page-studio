@@ -1333,6 +1333,7 @@
   // Grid rendering function
   // Grid rendering implementerad i Canvas.grid.js
   
+  /**
    * Handle context menu override action
    * @param {Object} event - Event object containing the target object
    */
