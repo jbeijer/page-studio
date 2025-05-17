@@ -68,11 +68,11 @@ Denna tasklista ger en nedbrytning av alla konkreta arbetsuppgifter som behöver
 ## Fas 2: Avancerad Layout
 
 ### Rutnät & Hjälplinjer
-- [ ] Implementera konfigurerbart rutnät (4 timmar) - **PRIO: HÖG**
-- [ ] Utveckla horisontell ruler-komponent (4 timmar) - **PRIO: HÖG**
-- [ ] Utveckla vertikal ruler-komponent (4 timmar) - **PRIO: HÖG**
-- [ ] Skapa dragbara hjälplinjer (6 timmar) - **PRIO: HÖG**
-- [ ] Implementera snappning till rutnät (4 timmar) - **PRIO: HÖG**
+- [x] Implementera konfigurerbart rutnät (4 timmar) - **PRIO: HÖG**
+- [x] Utveckla horisontell ruler-komponent (4 timmar) - **PRIO: HÖG**
+- [x] Utveckla vertikal ruler-komponent (4 timmar) - **PRIO: HÖG**
+- [x] Skapa dragbara hjälplinjer (6 timmar) - **PRIO: HÖG**
+- [x] Implementera snappning till rutnät (4 timmar) - **PRIO: HÖG**
 - [ ] Implementera snappning till hjälplinjer (4 timmar) - **PRIO: HÖG**
 - [ ] Utveckla marginal- och spaltinställningar (4 timmar) - **PRIO: HÖG**
 - [ ] Skapa visuell indikation för marginaler och spalter (2 timmar) - **PRIO: HÖG**

@@ -35,6 +35,10 @@ och projektet följer [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Möjlighet att redigera mallsidor separat från dokumentsidor
 - Ångra/göra om-funktionalitet med historikhantering
 - Stöd för att ta bort objekt via Delete-tangenten eller knapp
+- Implementerat konfigurerbart rutnät med SVG-baserad rendering
+- Utvecklat rulers (horisontell och vertikal) för precisa mätningar
+- Implementerat funktionalitet för dragbara hjälplinjer
+- Implementerat snappning till rutnät för exakt objektplacering
 
 ### Changed
 - Flyttade all projektdokumentation till `/docs`-mappen
@@ -44,6 +48,9 @@ och projektet följer [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Optimerad canvas-hantering för bättre prestanda
 - Förbättrad hemsida med dokumenthantering
 - Uppdaterad navigation med redigerbar dokumenttitel
+- Refaktorerad kod för bättre modularitet genom uppdelning i mindre komponenter
+- Förbättrad grid-rendering med SVG-baserad approach för exakt pixelrendering
+- Omstrukturerad Canvas.svelte med separata moduler för grid och guides
 
 ### Fixed
 - TailwindCSS-konfigurationen för kompatibilitet med Svelte 5
@@ -53,6 +60,10 @@ och projektet följer [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Fabric.js import-syntaxen för korrekt användning av biblioteket
 - Objekt-persistens vid sidbyte genom implementation av en mer robust laddningsmekanism
 - Direkt IndexedDB-åtkomst för att säkerställa att senaste data alltid används
+- Åtgärdat problem med "snöiga" grid-linjer genom att använda SVG istället för CSS
+- Löst issues med subpixel-rendering i grid-komponenten
+- Fixat rendering av guides genom förbättrad positionering
+- Korrigerat JSDoc-syntax i Canvas.svelte för korrekt kompilering
 
 ## [0.1.0] - 2025-05-17
 ### Added
