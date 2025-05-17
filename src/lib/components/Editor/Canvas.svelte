@@ -2,10 +2,12 @@
   import { onMount, onDestroy, createEventDispatcher } from 'svelte';
   import { currentDocument, currentPage } from '$lib/stores/document';
   import { activeTool, ToolType, currentToolOptions } from '$lib/stores/toolbar';
+  import { clipboard } from '$lib/stores/editor';
   import * as fabric from 'fabric';
   import TextFlow from '$lib/utils/text-flow';
   import HistoryManager from '$lib/utils/history-manager';
   import MasterObjectContextMenu from './MasterObjectContextMenu.svelte';
+  import { createLayerManagementFunctions, createClipboardFunctions } from './Canvas.helpers.js';
   
   const dispatch = createEventDispatcher();
   
@@ -37,14 +39,54 @@
     return 'obj-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
   }
   
+  // Keep track of the previous page to avoid redundant operations
+  let previousPage = null;
+  
   // Subscribe to current page changes
-  $: if ($currentPage && canvas) {
-    loadPage($currentPage);
+  $: if ($currentPage && canvas && $currentPage !== previousPage) {
+    console.log(`Page changed from ${previousPage} to ${$currentPage}`);
+    
+    // Only save the previous page if we had one
+    if (previousPage) {
+      console.log(`Saving previous page ${previousPage} before switching`);
+      
+      // Force save of current page with additional verification
+      const currentObjects = canvas.getObjects();
+      console.log(`Currently ${currentObjects.length} objects on canvas before saving previous page`);
+      if (currentObjects.length > 0) {
+        console.log(`Object types: ${currentObjects.map(obj => obj.type).join(', ')}`);
+      }
+      
+      saveCurrentPage();
+      
+      // Add a forced save to document store to ensure persistence
+      console.log("Forcing document save to ensure data persistence");
+      currentDocument.update(doc => {
+        return { ...doc, lastModified: new Date() };
+      });
+    }
+    
+    // Wait a moment to ensure save is complete before loading new page
+    setTimeout(() => {
+      // Update our tracking variable before loading the new page
+      const oldPage = previousPage;
+      previousPage = $currentPage;
+      
+      // Load the new page (without calling saveCurrentPage again)
+      console.log(`Loading new page: ${$currentPage} (after saving ${oldPage})`);
+      loadPage($currentPage, false); // Pass false to avoid saving again
+    }, 50);
   }
   
   // Handle active tool changes
   $: if (canvas && $activeTool) {
     setupCanvasForTool($activeTool);
+    
+    // After changing tools, ensure all objects are properly rendered
+    setTimeout(() => {
+      canvas.requestRenderAll();
+      canvas.renderAll();
+    }, 0);
   }
   
   // Watch for selected object changes
@@ -111,12 +153,43 @@
       onChange: (state) => {
         canUndo = state.canUndo;
         canRedo = state.canRedo;
+        
+        // Dispatch event both as a component event and a DOM event for Toolbar to listen
         dispatch('historyChange', { canUndo, canRedo });
+        
+        // Create a custom event for other components to listen to
+        const historyEvent = new CustomEvent('historyChange', { 
+          detail: { canUndo, canRedo },
+          bubbles: true 
+        });
+        document.dispatchEvent(historyEvent);
       }
     });
     
-    // Set up keyboard shortcuts for undo/redo
+    // Initialize layer management functions
+    const layerFunctions = createLayerManagementFunctions(canvas, saveCurrentPage);
+    bringForward = layerFunctions.bringForward;
+    sendBackward = layerFunctions.sendBackward;
+    bringToFront = layerFunctions.bringToFront;
+    sendToBack = layerFunctions.sendToBack;
+    
+    // Initialize clipboard functions
+    const clipboardFunctions = createClipboardFunctions(
+      canvas, saveCurrentPage, deleteSelectedObjects, generateId, clipboard, textFlow
+    );
+    copySelectedObjects = clipboardFunctions.copySelectedObjects;
+    cutSelectedObjects = clipboardFunctions.cutSelectedObjects;
+    pasteObjects = clipboardFunctions.pasteObjects;
+    
+    // Set up keyboard shortcuts for undo/redo, copy/paste
     const handleKeyboard = (e) => {
+      // Skip keyboard shortcuts if in a text input
+      if (e.target.tagName === 'INPUT' || 
+          e.target.tagName === 'TEXTAREA' || 
+          e.target.isContentEditable) {
+        return;
+      }
+      
       if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
         // Ctrl+Z or Cmd+Z for Undo
         e.preventDefault();
@@ -128,6 +201,22 @@
         // Ctrl+Y or Cmd+Y or Ctrl+Shift+Z or Cmd+Shift+Z for Redo
         e.preventDefault();
         redo();
+      } else if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+        // Ctrl+C or Cmd+C for Copy
+        if (canvas.getActiveObject()) {
+          e.preventDefault();
+          copySelectedObjects();
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.key === 'x') {
+        // Ctrl+X or Cmd+X for Cut
+        if (canvas.getActiveObject()) {
+          e.preventDefault();
+          cutSelectedObjects();
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+        // Ctrl+V or Cmd+V for Paste
+        e.preventDefault();
+        pasteObjects();
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         // Delete selected objects
         if (canvas.getActiveObject()) {
@@ -160,48 +249,312 @@
     };
   });
   
-  function loadPage(pageId) {
+  function loadPage(pageId, shouldSaveFirst = true) {
     if (!canvas || !$currentDocument) return;
     
-    // Save current page first
-    saveCurrentPage();
+    console.log(`loadPage called for page: ${pageId} (shouldSaveFirst: ${shouldSaveFirst})`);
     
-    // Find the page to load
+    // Save current page first (only if requested and we have a current page)
+    if (shouldSaveFirst && $currentPage) {
+      console.log(`Saving current page ${$currentPage} before loading ${pageId}`);
+      saveCurrentPage();
+    }
+    
+    // Force canvas to clear and reset
+    canvas.clear();
+    canvas.backgroundColor = 'white';
+    canvas.renderAll();
+    
+    // Find the page to load 
     const pageToLoad = $currentDocument.pages.find(p => p.id === pageId);
+    
+    console.log(`Page to load:`, pageId, pageToLoad ? 'found' : 'not found');
     
     if (pageToLoad) {
       // Clear canvas
       canvas.clear();
       canvas.backgroundColor = 'white';
       
+      // Log detailed info about the page we're about to load
+      console.log("Loading page data:", {
+        pageId: pageToLoad.id,
+        hasCanvasData: !!pageToLoad.canvasJSON,
+        dataType: pageToLoad.canvasJSON ? typeof pageToLoad.canvasJSON : 'null',
+        dataLength: pageToLoad.canvasJSON ? 
+          (typeof pageToLoad.canvasJSON === 'string' ? 
+            pageToLoad.canvasJSON.length : 
+            JSON.stringify(pageToLoad.canvasJSON).length) : 0,
+        hasMasterPage: !!pageToLoad.masterPageId,
+        masterId: pageToLoad.masterPageId
+      });
+      
       // Load content if it exists
       if (pageToLoad.canvasJSON) {
         try {
+          console.log("Loading canvas content for page:", pageId);
+          
           // Parse JSON if it's a string (from IndexedDB storage)
           const jsonData = typeof pageToLoad.canvasJSON === 'string'
             ? JSON.parse(pageToLoad.canvasJSON)
             : pageToLoad.canvasJSON;
-            
-          canvas.loadFromJSON(jsonData, () => {
-            // Set up event handlers for text objects after loading
-            const textObjects = canvas.getObjects('textbox');
-            if (textObjects.length > 0 && textFlow) {
-              textObjects.forEach(textObj => {
-                if (!textObj.id) textObj.id = generateId();
-                if (!textObj.linkedObjectIds) textObj.linkedObjectIds = [];
-                
-                // Set up event handlers for text flow
-                textObj.on('modified', () => updateTextFlow(textObj));
-                textObj.on('changed', () => updateTextFlow(textObj));
-              });
-            }
-            
-            canvas.renderAll();
+          
+          const objectCount = jsonData.objects ? jsonData.objects.length : 0;
+          console.log(`Canvas JSON parsed successfully, contains ${objectCount} objects`);
+          
+          // Verify fabric.js is fully loaded before we try to create objects
+          console.log("Fabric version:", fabric.version);
+          console.log("Fabric capabilities check:", {
+            hasCanvas: !!fabric.Canvas,
+            hasUtil: !!fabric.util,
+            hasEnlivenObjects: !!(fabric.util && fabric.util.enlivenObjects),
+            hasTextbox: !!fabric.Textbox
           });
+          
+          if (objectCount > 0) {
+            console.log("Object types to load:", jsonData.objects.map(obj => obj.type));
+          }
+          
+          // RADICAL NEW APPROACH: Create objects directly using Fabric constructors
+          // instead of using enlivenObjects which seems to be failing
+          
+          // Skip for empty canvases
+          if (objectCount === 0) {
+            console.log("Canvas is empty, simply setting background");
+            // Just set the background color for empty canvas
+            canvas.backgroundColor = jsonData.background || 'white';
+            canvas.requestRenderAll();
+            canvas.renderAll();
+          } else {
+            // For canvases with objects, create them directly based on their type
+            console.log(`Loading ${objectCount} objects into canvas using direct creation`);
+            
+            try {
+              // Set the canvas background first
+              canvas.backgroundColor = jsonData.background || 'white';
+              
+              // Create objects directly by type
+              let createdCount = 0;
+              
+              jsonData.objects.forEach((objData, index) => {
+                let fabricObj = null;
+                
+                // Create different types of objects based on their 'type' property
+                switch (objData.type.toLowerCase()) {
+                  case 'textbox':
+                    console.log(`Creating textbox #${index} with text: ${objData.text}`);
+                    fabricObj = new fabric.Textbox(objData.text || 'Text', {
+                      left: objData.left || 100,
+                      top: objData.top || 100,
+                      width: objData.width || 200,
+                      fontFamily: objData.fontFamily || 'Arial',
+                      fontSize: objData.fontSize || 16,
+                      fontStyle: objData.fontStyle || 'normal',
+                      fontWeight: objData.fontWeight || 'normal',
+                      textAlign: objData.textAlign || 'left',
+                      fill: objData.fill || '#000000',
+                      id: objData.id || generateId(),
+                      angle: objData.angle || 0,
+                      scaleX: objData.scaleX || 1,
+                      scaleY: objData.scaleY || 1,
+                      lockMovementX: objData.lockMovementX || false,
+                      lockMovementY: objData.lockMovementY || false,
+                      selectable: $activeTool === ToolType.SELECT,
+                      evented: true
+                    });
+                    break;
+                    
+                  case 'rect':
+                    console.log(`Creating rectangle #${index}`);
+                    fabricObj = new fabric.Rect({
+                      left: objData.left || 100,
+                      top: objData.top || 100,
+                      width: objData.width || 100,
+                      height: objData.height || 100,
+                      fill: objData.fill || '#cccccc',
+                      stroke: objData.stroke || '#000000',
+                      strokeWidth: objData.strokeWidth || 1,
+                      rx: objData.rx || 0,
+                      ry: objData.ry || 0,
+                      angle: objData.angle || 0,
+                      scaleX: objData.scaleX || 1,
+                      scaleY: objData.scaleY || 1,
+                      id: objData.id || generateId(),
+                      selectable: $activeTool === ToolType.SELECT,
+                      evented: true
+                    });
+                    break;
+                    
+                  case 'ellipse':
+                    console.log(`Creating ellipse #${index}`);
+                    fabricObj = new fabric.Ellipse({
+                      left: objData.left || 100,
+                      top: objData.top || 100,
+                      rx: objData.rx || 50,
+                      ry: objData.ry || 50,
+                      fill: objData.fill || '#cccccc',
+                      stroke: objData.stroke || '#000000',
+                      strokeWidth: objData.strokeWidth || 1,
+                      angle: objData.angle || 0,
+                      scaleX: objData.scaleX || 1,
+                      scaleY: objData.scaleY || 1,
+                      id: objData.id || generateId(),
+                      selectable: $activeTool === ToolType.SELECT,
+                      evented: true
+                    });
+                    break;
+                    
+                  case 'line':
+                    console.log(`Creating line #${index}`);
+                    fabricObj = new fabric.Line([
+                      objData.x1 || 0, 
+                      objData.y1 || 0, 
+                      objData.x2 || 100, 
+                      objData.y2 || 100
+                    ], {
+                      stroke: objData.stroke || '#000000',
+                      strokeWidth: objData.strokeWidth || 1,
+                      angle: objData.angle || 0,
+                      scaleX: objData.scaleX || 1,
+                      scaleY: objData.scaleY || 1,
+                      id: objData.id || generateId(),
+                      selectable: $activeTool === ToolType.SELECT,
+                      evented: true
+                    });
+                    break;
+                    
+                  case 'image':
+                    // Images are more complex to recreate, we'll use a placeholder for now
+                    console.log(`Creating image placeholder for #${index}`);
+                    // We'll use a rect as placeholder and add text saying "Image"
+                    fabricObj = new fabric.Rect({
+                      left: objData.left || 100,
+                      top: objData.top || 100,
+                      width: objData.width || 100,
+                      height: objData.height || 100,
+                      fill: '#eeeeee',
+                      stroke: '#000000',
+                      strokeDashArray: [5, 5],
+                      id: objData.id || generateId(),
+                      selectable: $activeTool === ToolType.SELECT,
+                      evented: true
+                    });
+                    
+                    // Add text saying "Image" on top of the placeholder
+                    const imgText = new fabric.Text('Image', {
+                      left: (objData.left || 100) + (objData.width || 100) / 2,
+                      top: (objData.top || 100) + (objData.height || 100) / 2,
+                      originX: 'center',
+                      originY: 'center',
+                      fontSize: 12,
+                      fontFamily: 'Arial',
+                      fill: '#666666'
+                    });
+                    canvas.add(imgText);
+                    break;
+                    
+                  default:
+                    console.log(`Unsupported object type: ${objData.type}`);
+                    return; // Skip this object
+                }
+                
+                // If we successfully created an object, add it to the canvas
+                if (fabricObj) {
+                  // Add the object to the canvas
+                  canvas.add(fabricObj);
+                  
+                  // Copy ALL custom properties from the original object
+                  // This ensures we don't miss any important metadata
+                  Object.keys(objData).forEach(key => {
+                    // Skip properties that are standard Fabric object properties
+                    // or that were already set during construction
+                    const standardProps = [
+                      'type', 'left', 'top', 'width', 'height', 'fill', 
+                      'stroke', 'strokeWidth', 'rx', 'ry', 'x1', 'y1', 'x2', 'y2',
+                      'angle', 'scaleX', 'scaleY', 'fontFamily', 'fontSize', 
+                      'fontWeight', 'fontStyle', 'text', 'textAlign'
+                    ];
+                    
+                    if (!standardProps.includes(key)) {
+                      // Copy the custom property
+                      fabricObj[key] = objData[key];
+                    }
+                  });
+                  
+                  // Explicitly set important properties to ensure they're copied
+                  if (objData.fromMaster) {
+                    fabricObj.fromMaster = objData.fromMaster;
+                    fabricObj.masterId = objData.masterId;
+                    fabricObj.masterObjectId = objData.masterObjectId;
+                    fabricObj.overridable = objData.overridable !== false; // Default to true
+                  }
+                  
+                  // Set up event handlers for text flow
+                  if (fabricObj.type === 'textbox' && textFlow) {
+                    if (!fabricObj.linkedObjectIds) {
+                      fabricObj.linkedObjectIds = objData.linkedObjectIds || [];
+                    }
+                    
+                    fabricObj.on('modified', () => updateTextFlow(fabricObj));
+                    fabricObj.on('changed', () => updateTextFlow(fabricObj));
+                  }
+                  
+                  createdCount++;
+                }
+              });
+              
+              console.log(`Created ${createdCount}/${objectCount} objects directly`);
+              
+              // Final check
+              const finalObjects = canvas.getObjects();
+              console.log(`Canvas now has ${finalObjects.length} total objects`);
+              
+              // Print detailed object info for debugging
+              if (finalObjects.length > 0) {
+                console.log("Recreated objects list:");
+                finalObjects.forEach((obj, idx) => {
+                  console.log(`[${idx}] Type: ${obj.type}, Pos: (${Math.round(obj.left)},${Math.round(obj.top)}), ID: ${obj.id}`);
+                });
+              } else {
+                console.warn("No objects were successfully created! This should be investigated.");
+              }
+              
+              // Force multiple renders to ensure visibility
+              canvas.requestRenderAll();
+              canvas.renderAll();
+              
+              // Additional render cycle with delay
+              setTimeout(() => {
+                // Ensure all objects are properly set up
+                canvas.getObjects().forEach(obj => {
+                  obj.evented = true;
+                  obj.selectable = $activeTool === ToolType.SELECT;
+                });
+                
+                canvas.requestRenderAll();
+                canvas.renderAll();
+                
+                // Log the result
+                console.log(`After final render: ${canvas.getObjects().length} objects visible on canvas`);
+              }, 100);
+            } catch (err) {
+              console.error("Error creating objects directly:", err);
+            }
+          }
+          
         } catch (err) {
-          console.error('Error loading canvas JSON:', err);
+          console.error('Error parsing canvas JSON:', err);
+          console.error('Data that caused the error:', 
+            typeof pageToLoad.canvasJSON === 'string' ? 
+              pageToLoad.canvasJSON.substring(0, 100) + '...' : 
+              JSON.stringify(pageToLoad.canvasJSON).substring(0, 100) + '...');
+          
           // Continue with a blank canvas if JSON parsing fails
+          canvas.clear();
+          canvas.backgroundColor = 'white';
+          canvas.renderAll();
         }
+      } else {
+        console.log("No canvas data to load, starting with empty canvas");
       }
       
       // Apply master page if specified
@@ -212,38 +565,168 @@
   }
   
   function saveCurrentPage() {
-    if (!canvas || !$currentPage || !$currentDocument) return;
+    if (!canvas) {
+      console.warn("Cannot save page: Canvas is not initialized");
+      return;
+    }
+    
+    if (!$currentPage) {
+      console.warn("Cannot save page: No current page");
+      return;
+    }
+    
+    if (!$currentDocument) {
+      console.warn("Cannot save page: No current document");
+      return;
+    }
     
     const pageIndex = $currentDocument.pages.findIndex(p => p.id === $currentPage);
-    if (pageIndex >= 0) {
+    if (pageIndex < 0) {
+      console.warn(`Cannot save page: Page ${$currentPage} not found in document`);
+      return;
+    }
+    
+    try {
+      console.log(`Saving page ${$currentPage} (index ${pageIndex})`);
+      
+      // CRITICAL: Capture canvas objects BEFORE any other operations
+      const initialCanvasObjects = [...canvas.getObjects()];
+      const objectCount = initialCanvasObjects.length;
+      
+      console.log(`Found ${objectCount} objects to save on the canvas`);
+      
+      // Exit early if the canvas is already empty
+      if (objectCount === 0) {
+        console.log("Canvas is empty, saving minimal state");
+        
+        // Create a minimal canvas representation
+        const emptyCanvasJSON = JSON.stringify({
+          "version": "4.6.0",
+          "objects": [],
+          "background": "white"
+        });
+        
+        // Update document with empty canvas
+        const updatedPages = [...$currentDocument.pages];
+        updatedPages[pageIndex] = {
+          ...updatedPages[pageIndex],
+          canvasJSON: emptyCanvasJSON,
+          masterPageId: updatedPages[pageIndex].masterPageId,
+          overrides: updatedPages[pageIndex].overrides || {}
+        };
+        
+        // Update the store
+        currentDocument.update(doc => ({
+          ...doc,
+          pages: updatedPages,
+          lastModified: new Date()
+        }));
+        
+        console.log(`Empty page ${$currentPage} saved successfully`);
+        return;
+      }
+      
+      // Debug what objects we're saving
+      console.log("Object types being saved:", initialCanvasObjects.map(obj => obj.type));
+      
+      // Special check for new objects without IDs
+      initialCanvasObjects.forEach(obj => {
+        if (!obj.id) {
+          console.log("Adding missing ID to object:", obj.type);
+          obj.id = generateId();
+        }
+      });
+      
       // Serialize canvas with custom properties
-      const canvasJSON = JSON.stringify(canvas.toJSON([
+      const canvasData = canvas.toJSON([
         'id', 
         'linkedObjectIds', 
         'fromMaster', 
         'masterId', 
         'masterObjectId', 
         'overridable'
-      ]));
+      ]);
       
+      // Verify objects in the JSON match what we expect
+      const jsonObjectCount = canvasData.objects ? canvasData.objects.length : 0;
+      console.log(`JSON has ${jsonObjectCount} objects (expected ${objectCount})`);
+      
+      if (jsonObjectCount !== objectCount) {
+        console.warn("WARNING: Object count mismatch between canvas and JSON!");
+      }
+      
+      // Stringify with indentation for debugging
+      const canvasJSON = JSON.stringify(canvasData);
+      console.log(`Serialized canvas JSON length: ${canvasJSON.length} characters`);
+      
+      // Check for empty/corrupt JSON
+      if (canvasJSON.length < 50) {
+        console.warn("WARNING: Canvas JSON is suspiciously small, might be empty:", canvasJSON);
+      }
+      
+      // Create updated page object
       const updatedPages = [...$currentDocument.pages];
-      
-      // Preserve the masterPageId and overrides when saving
-      const masterPageId = updatedPages[pageIndex].masterPageId;
-      const overrides = updatedPages[pageIndex].overrides || {};
-      
-      updatedPages[pageIndex] = {
+      const updatedPage = {
         ...updatedPages[pageIndex],
         canvasJSON: canvasJSON,
-        masterPageId: masterPageId,
-        overrides: overrides
+        masterPageId: updatedPages[pageIndex].masterPageId,
+        overrides: updatedPages[pageIndex].overrides || {}
       };
       
-      currentDocument.update(doc => ({
-        ...doc,
-        pages: updatedPages,
-        lastModified: new Date()
-      }));
+      // Final verification before saving
+      if (!updatedPage.canvasJSON || updatedPage.canvasJSON.length < 50) {
+        console.error("CRITICAL ERROR: About to save empty/invalid JSON. Forcing valid JSON.");
+        
+        // Create a direct JSON representation of the objects
+        const directJSON = {
+          "version": "4.6.0",
+          "objects": initialCanvasObjects.map(obj => obj.toJSON([
+            'id', 'linkedObjectIds', 'fromMaster', 'masterId', 'masterObjectId', 'overridable'
+          ])),
+          "background": "white"
+        };
+        
+        // Use this as a fallback
+        updatedPage.canvasJSON = JSON.stringify(directJSON);
+      }
+      
+      // Log the final state
+      console.log(`Updated page canvasJSON length: ${updatedPage.canvasJSON.length}`);
+      console.log(`JSON objects: ${JSON.parse(updatedPage.canvasJSON).objects.length}`);
+      
+      // Update page in the array
+      updatedPages[pageIndex] = updatedPage;
+      
+      console.log(`Updating document with saved page ${$currentPage}`);
+      
+      // Update the store with the new pages
+      currentDocument.update(doc => {
+        const updatedDoc = {
+          ...doc,
+          pages: updatedPages,
+          lastModified: new Date()
+        };
+        
+        // Verify the update worked
+        const verifyPageIndex = updatedDoc.pages.findIndex(p => p.id === $currentPage);
+        if (verifyPageIndex >= 0) {
+          const verifyPage = updatedDoc.pages[verifyPageIndex];
+          console.log(`Verification: Page ${verifyPage.id} has canvasJSON of length ${verifyPage.canvasJSON ? verifyPage.canvasJSON.length : 0}`);
+          
+          try {
+            const jsonData = JSON.parse(verifyPage.canvasJSON);
+            console.log(`Verification: JSON contains ${jsonData.objects.length} objects`);
+          } catch (err) {
+            console.error("Verification: Failed to parse JSON:", err);
+          }
+        }
+        
+        return updatedDoc;
+      });
+      
+      console.log(`Page ${$currentPage} saved successfully with ${objectCount} objects`);
+    } catch (err) {
+      console.error(`Error saving page ${$currentPage}:`, err);
     }
   }
   
@@ -257,7 +740,7 @@
     // Enable/disable selection based on tool
     canvas.selection = toolType === ToolType.SELECT;
     
-    // Make objects selectable only with the select tool
+    // Make objects selectable only with the select tool, but keep them visible and responsive
     const canvasObjects = canvas.getObjects();
     canvasObjects.forEach(obj => {
       // Master page objects have special handling
@@ -266,7 +749,13 @@
         obj.evented = true; // But they can receive events for context menu
       } else {
         obj.selectable = toolType === ToolType.SELECT;
-        obj.evented = toolType === ToolType.SELECT;
+        obj.evented = true; // Keep evented true to ensure objects remain visible and can receive events
+        // Only enable selection for the SELECT tool
+        if (toolType !== ToolType.SELECT) {
+          obj.hoverCursor = 'default'; // Change cursor for non-selectable objects
+        } else {
+          obj.hoverCursor = 'move'; // Default cursor for selectable objects
+        }
       }
     });
     
@@ -288,7 +777,8 @@
         break;
     }
     
-    // Render the canvas with the new settings
+    // Ensure full re-render of the canvas with all objects
+    canvas.requestRenderAll();
     canvas.renderAll();
   }
   
@@ -358,7 +848,7 @@
           rx: rectOptions.cornerRadius,
           ry: rectOptions.cornerRadius,
           selectable: false,
-          evented: false
+          evented: true  // Keep evented true for visibility
         });
         canvas.add(drawingObject);
         break;
@@ -375,7 +865,7 @@
           stroke: ellipseOptions.stroke,
           strokeWidth: ellipseOptions.strokeWidth,
           selectable: false,
-          evented: false
+          evented: true  // Keep evented true for visibility
         });
         canvas.add(drawingObject);
         break;
@@ -389,7 +879,7 @@
             stroke: lineOptions.stroke,
             strokeWidth: lineOptions.strokeWidth,
             selectable: false,
-            evented: false
+            evented: true  // Keep evented true for visibility
           }
         );
         canvas.add(drawingObject);
@@ -455,10 +945,11 @@
     isDrawing = false;
     
     if (drawingObject) {
-      // Make the drawn object selectable if we're switching back to select tool
+      // Make the drawn object properly set for interactivity
       drawingObject.set({
-        selectable: true,
-        evented: true
+        selectable: $activeTool === ToolType.SELECT, // Only selectable in SELECT mode
+        evented: true, // Always evented to ensure visibility
+        hoverCursor: $activeTool === ToolType.SELECT ? 'move' : 'default'
       });
       
       // Clean up tiny objects (likely accidental clicks)
@@ -477,6 +968,8 @@
       }
       
       drawingObject = null;
+      // Request a complete render cycle
+      canvas.requestRenderAll();
       canvas.renderAll();
     }
   }
@@ -675,6 +1168,28 @@
     }
   }
   
+  // Export functions that will be updated once canvas is initialized
+  export let bringForward;
+  export let sendBackward;
+  export let bringToFront;
+  export let sendToBack;
+  export let copySelectedObjects;
+  export let cutSelectedObjects;
+  export let pasteObjects;
+  
+  // Export undo/redo functions
+  export function undo() {
+    if (historyManager && historyManager.canUndo()) {
+      historyManager.undo();
+    }
+  }
+  
+  export function redo() {
+    if (historyManager && historyManager.canRedo()) {
+      historyManager.redo();
+    }
+  }
+  
   /**
    * Apply a master page to the current canvas
    * @param {string} masterPageId - ID of the master page to apply
@@ -834,22 +1349,11 @@
   }
   
   /**
-   * Undo the last canvas action
+   * Export saveCurrentPage function to allow external components to trigger saves
    */
-  export function undo() {
-    if (historyManager && historyManager.canUndo()) {
-      historyManager.undo();
-    }
-  }
+  export { saveCurrentPage };
   
-  /**
-   * Redo the last undone action
-   */
-  export function redo() {
-    if (historyManager && historyManager.canRedo()) {
-      historyManager.redo();
-    }
-  }
+  // Undo/redo functions now defined above
   
   /**
    * Delete currently selected objects
@@ -888,6 +1392,9 @@
     
     dispatch('objectselected', { object: null, objectType: null });
   }
+  
+  // Layer management and clipboard functions are now created and exported 
+  // using the helper functions from Canvas.helpers.js
 </script>
 
 <div class="canvas-wrapper relative overflow-hidden">

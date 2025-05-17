@@ -120,12 +120,25 @@ describe('Storage Utility', () => {
     };
     mockStore.put.mockReturnValue(mockPutRequest);
     
+    // Setup verification request
+    const mockVerifyRequest = {
+      onsuccess: null,
+      onerror: null,
+      result: { ...mockDocument }
+    };
+    mockStore.get.mockReturnValue(mockVerifyRequest);
+    
     // Call saveDocument and trigger the success event
     const savePromise = saveDocument(mockDocument);
     
     // Trigger success callback asynchronously
     setTimeout(() => {
       mockPutRequest.onsuccess && mockPutRequest.onsuccess();
+      
+      // Trigger verification success
+      setTimeout(() => {
+        mockVerifyRequest.onsuccess && mockVerifyRequest.onsuccess({ target: mockVerifyRequest });
+      }, 0);
     }, 0);
     
     const result = await savePromise;
@@ -133,7 +146,60 @@ describe('Storage Utility', () => {
     expect(mockDB.transaction).toHaveBeenCalledWith([DOCUMENT_STORE], 'readwrite');
     expect(mockTransaction.objectStore).toHaveBeenCalledWith(DOCUMENT_STORE);
     expect(mockStore.put).toHaveBeenCalled();
+    expect(mockStore.get).toHaveBeenCalled(); // Verify verification step is called
     expect(result).toBe(mockDocument.id);
+  });
+  
+  test('saveDocument should handle invalid canvasJSON data', async () => {
+    // Create a document with invalid canvasJSON
+    const documentWithInvalidJSON = {
+      ...mockDocument,
+      pages: [
+        { id: 'page-1', canvasJSON: '{broken json}', masterPageId: null },
+        { id: 'page-2', canvasJSON: undefined, masterPageId: null }, // undefined case
+        { id: 'page-3', canvasJSON: null, masterPageId: null } // null case
+      ]
+    };
+    
+    // Setup mock put request
+    const mockPutRequest = {
+      onsuccess: null,
+      onerror: null
+    };
+    mockStore.put.mockReturnValue(mockPutRequest);
+    
+    // Setup verification request
+    const mockVerifyRequest = {
+      onsuccess: null,
+      onerror: null,
+      result: { ...documentWithInvalidJSON }
+    };
+    mockStore.get.mockReturnValue(mockVerifyRequest);
+    
+    // Call saveDocument with invalid data
+    const savePromise = saveDocument(documentWithInvalidJSON);
+    
+    // Trigger success callback asynchronously
+    setTimeout(() => {
+      mockPutRequest.onsuccess && mockPutRequest.onsuccess();
+      setTimeout(() => {
+        mockVerifyRequest.onsuccess && mockVerifyRequest.onsuccess({ target: mockVerifyRequest });
+      }, 0);
+    }, 0);
+    
+    await savePromise;
+    
+    // Check that storage.js tried to fix the invalid data
+    const putCall = mockStore.put.mock.calls[0][0];
+    
+    // Check that the broken JSON was replaced with valid empty canvas JSON
+    expect(putCall.pages[0].canvasJSON).toBe('{"objects":[],"background":"white"}');
+    
+    // Check that undefined was replaced with null
+    expect(putCall.pages[1].canvasJSON).toBe(null);
+    
+    // Check that null was preserved
+    expect(putCall.pages[2].canvasJSON).toBe(null);
   });
   
   test('loadDocument should retrieve a document from IndexedDB', async () => {
@@ -167,6 +233,54 @@ describe('Storage Utility', () => {
     expect(result).toHaveProperty('title', mockDocument.title);
     expect(result.created).toBeInstanceOf(Date);
     expect(result.lastModified).toBeInstanceOf(Date);
+  });
+  
+  test('loadDocument should handle corrupted canvasJSON data', async () => {
+    // Create a result with corrupted data
+    const documentWithCorruptedData = {
+      ...mockDocument,
+      created: mockDocument.created.toISOString(),
+      lastModified: mockDocument.lastModified.toISOString(),
+      pages: [
+        { id: 'page-1', canvasJSON: '{invalid json syntax}', masterPageId: null },
+        { id: 'page-2', canvasJSON: '{ "not a fabric json": true }', masterPageId: null },
+        { id: 'page-3', canvasJSON: null, masterPageId: null } // null should be handled gracefully
+      ]
+    };
+    
+    // Setup mock get request with corrupted data
+    const mockGetRequest = {
+      onsuccess: null,
+      onerror: null,
+      result: documentWithCorruptedData
+    };
+    
+    mockStore.get.mockReturnValue(mockGetRequest);
+    
+    // Call loadDocument
+    const loadPromise = loadDocument(mockDocument.id);
+    
+    // Manually trigger the success event
+    setTimeout(() => {
+      mockGetRequest.onsuccess && mockGetRequest.onsuccess({ target: mockGetRequest });
+    }, 0);
+    
+    const result = await loadPromise;
+    
+    // Check that the first page's corrupted JSON was replaced with default empty canvas
+    expect(result.pages[0].canvasJSON).toBe('{"objects":[],"background":"white"}');
+    
+    // In our current implementation, valid JSON with missing objects isn't caught
+    // So we should see the original JSON still preserved as long as it parses
+    expect(typeof result.pages[1].canvasJSON).toBe('string');
+    
+    // Null canvasJSON should remain null
+    expect(result.pages[2].canvasJSON).toBe(null);
+    
+    // Page overrides should be initialized
+    expect(result.pages[0].overrides).toEqual({});
+    expect(result.pages[1].overrides).toEqual({});
+    expect(result.pages[2].overrides).toEqual({});
   });
   
   test('getDocumentList should return a list of document summaries', async () => {
