@@ -4,6 +4,7 @@
  */
 
 import { ToolType } from '$lib/stores/toolbar';
+import { getTextObjectFactory } from '$lib/utils/fabric-helpers';
 
 /**
  * Create event handling functions for the Canvas component
@@ -72,15 +73,23 @@ export function createEventHandlers(context) {
   function handleTextToolMouseDown(options, pointer) {
     if (options.target) return;
     
+    // Get the appropriate text object factory based on fabric version
+    const createTextObject = getTextObjectFactory();
+    
+    if (!createTextObject) {
+      console.error("ERROR: Could not obtain text object factory");
+      return;
+    }
+    
     const textOptions = context.currentToolOptions;
-    const text = new fabric.Textbox('Edit this text', {
+    const text = createTextObject('Edit this text', {
       left: pointer.x,
       top: pointer.y,
-      fontFamily: textOptions.fontFamily,
-      fontSize: textOptions.fontSize,
-      fontStyle: textOptions.fontStyle,
-      fontWeight: textOptions.fontWeight,
-      textAlign: textOptions.textAlign,
+      fontFamily: textOptions.fontFamily || 'Arial',
+      fontSize: textOptions.fontSize || 16,
+      fontStyle: textOptions.fontStyle || 'normal',
+      fontWeight: textOptions.fontWeight || 'normal',
+      textAlign: textOptions.textAlign || 'left',
       width: 200,
       fill: '#000000',
       editable: true,
@@ -88,9 +97,19 @@ export function createEventHandlers(context) {
       linkedObjectIds: [] // Initialize linked objects array
     });
     
+    if (!text) {
+      console.error("ERROR: Failed to create text object");
+      return;
+    }
+    
     canvas.add(text);
     canvas.setActiveObject(text);
-    text.enterEditing();
+    
+    // Try to enter editing mode if supported
+    if (typeof text.enterEditing === 'function') {
+      text.enterEditing();
+    }
+    
     isDrawing = false;
     
     // Add text to TextFlow manager
@@ -120,20 +139,32 @@ export function createEventHandlers(context) {
    */
   function handleRectangleToolMouseDown(options, pointer) {
     const rectOptions = context.currentToolOptions;
-    drawingObject = new fabric.Rect({
-      left: pointer.x,
-      top: pointer.y,
-      width: 0,
-      height: 0,
-      fill: rectOptions.fill,
-      stroke: rectOptions.stroke,
-      strokeWidth: rectOptions.strokeWidth,
-      rx: rectOptions.cornerRadius,
-      ry: rectOptions.cornerRadius,
-      selectable: false,
-      evented: true  // Keep evented true for visibility
-    });
-    canvas.add(drawingObject);
+    
+    try {
+      drawingObject = new fabric.Rect({
+        left: pointer.x,
+        top: pointer.y,
+        width: 0,
+        height: 0,
+        fill: rectOptions.fill || '#cccccc',
+        stroke: rectOptions.stroke || '#000000',
+        strokeWidth: rectOptions.strokeWidth || 1,
+        rx: rectOptions.cornerRadius || 0,
+        ry: rectOptions.cornerRadius || 0,
+        selectable: false,
+        evented: true  // Keep evented true for visibility
+      });
+      
+      if (!drawingObject) {
+        console.error("ERROR: Failed to create rectangle object");
+        return;
+      }
+      
+      canvas.add(drawingObject);
+    } catch (error) {
+      console.error("ERROR: Error creating rectangle:", error);
+      drawingObject = null;
+    }
   }
 
   /**
@@ -143,18 +174,30 @@ export function createEventHandlers(context) {
    */
   function handleEllipseToolMouseDown(options, pointer) {
     const ellipseOptions = context.currentToolOptions;
-    drawingObject = new fabric.Ellipse({
-      left: pointer.x,
-      top: pointer.y,
-      rx: 0,
-      ry: 0,
-      fill: ellipseOptions.fill,
-      stroke: ellipseOptions.stroke,
-      strokeWidth: ellipseOptions.strokeWidth,
-      selectable: false,
-      evented: true  // Keep evented true for visibility
-    });
-    canvas.add(drawingObject);
+    
+    try {
+      drawingObject = new fabric.Ellipse({
+        left: pointer.x,
+        top: pointer.y,
+        rx: 0,
+        ry: 0,
+        fill: ellipseOptions.fill || '#cccccc',
+        stroke: ellipseOptions.stroke || '#000000',
+        strokeWidth: ellipseOptions.strokeWidth || 1,
+        selectable: false,
+        evented: true  // Keep evented true for visibility
+      });
+      
+      if (!drawingObject) {
+        console.error("ERROR: Failed to create ellipse object");
+        return;
+      }
+      
+      canvas.add(drawingObject);
+    } catch (error) {
+      console.error("ERROR: Error creating ellipse:", error);
+      drawingObject = null;
+    }
   }
 
   /**
@@ -164,16 +207,28 @@ export function createEventHandlers(context) {
    */
   function handleLineToolMouseDown(options, pointer) {
     const lineOptions = context.currentToolOptions;
-    drawingObject = new fabric.Line(
-      [pointer.x, pointer.y, pointer.x, pointer.y], 
-      {
-        stroke: lineOptions.stroke,
-        strokeWidth: lineOptions.strokeWidth,
-        selectable: false,
-        evented: true  // Keep evented true for visibility
+    
+    try {
+      drawingObject = new fabric.Line(
+        [pointer.x, pointer.y, pointer.x, pointer.y], 
+        {
+          stroke: lineOptions.stroke || '#000000',
+          strokeWidth: lineOptions.strokeWidth || 1,
+          selectable: false,
+          evented: true  // Keep evented true for visibility
+        }
+      );
+      
+      if (!drawingObject) {
+        console.error("ERROR: Failed to create line object");
+        return;
       }
-    );
-    canvas.add(drawingObject);
+      
+      canvas.add(drawingObject);
+    } catch (error) {
+      console.error("ERROR: Error creating line:", error);
+      drawingObject = null;
+    }
   }
 
   /**
@@ -304,9 +359,14 @@ export function createEventHandlers(context) {
     const target = options.target;
     
     // Handle double-clicking on text objects to enter edit mode
-    if (target && target.type === 'textbox') {
+    // Check for both textbox and text/itext types
+    if (target && (target.type === 'textbox' || target.type === 'text' || target.type === 'i-text')) {
       canvas.setActiveObject(target);
-      target.enterEditing();
+      
+      // Make sure enterEditing exists before calling it
+      if (typeof target.enterEditing === 'function') {
+        target.enterEditing();
+      }
     }
   }
 
