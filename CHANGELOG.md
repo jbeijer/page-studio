@@ -12,21 +12,37 @@ och projektet följer [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Grundläggande canvas-editor med Fabric.js
 - Dokumentmodell för multipage-dokument
 - Grundläggande PDF-exportfunktionalitet
-- Texthantering i redigeraren
-- Bildimport och -hantering
-- Lokal lagring med IndexedDB
 - Sidnavigering för multipage-dokument
 - TestDriven Development (TDD) uppsättning med Vitest
 - Implementationsplan och teknisk dokumentation
 - Skapat mapp-strukturen för /docs med detaljerad dokumentation
+- Avancerad toolbar med verktygsväljare för olika objekttyper
+- Fullständig textredigeringskomponent med formatering
+- Implementerat verktyg för rektanglar, linjer och ellipser
+- Textflödesfunktionalitet mellan länkade textrutor
+- Stöd för objekt-transformation (rotera, skala)
+- Bildimport och -hantering
+- Komplett test-suite för textflödesfunktionaliteten
+- Komplett dokumentlagring med IndexedDB
+- Funktionalitet för att skapa, spara och ladda dokument
+- Dokumentlistkomponent för att hantera tidigare dokument
+- Stöd för dokumentmetadata (titel, skapare, datum)
+- Automatisk sparning av canvas-tillstånd
+- Avancerad JSON-serialisering av canvas-objekt med länkrelationer
 
 ### Changed
 - Flyttade all projektdokumentation till `/docs`-mappen
 - Standardgrennamn från "master" till "main"
+- Uppdaterade task-list.md för att reflektera aktuellt projektläge
+- Förbättrade TextEditingPanel med stöd för avancerad textformatering
+- Optimerad canvas-hantering för bättre prestanda
+- Förbättrad hemsida med dokumenthantering
+- Uppdaterad navigation med redigerbar dokumenttitel
 
 ### Fixed
 - TailwindCSS-konfigurationen för kompatibilitet med Svelte 5
 - Event-attribut syntax i Svelte-komponenter för att följa Svelte 5-standard
+- Tillgänglighetsproblem i knappar utan textinnehåll
 
 ## [0.1.0] - 2025-05-17
 ### Added

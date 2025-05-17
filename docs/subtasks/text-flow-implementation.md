@@ -1,7 +1,25 @@
 # Implementering av Textflöde mellan Textrutor
-## 2025-05-17
+## 2025-05-18
+
+> **Status: Implementerad och testad**
 
 Detta dokument beskriver den detaljerade implementationsplanen för textflödesfunktionaliteten i den webbaserade InDesign-ersättaren. Denna komponent har identifierats som en av de mest komplexa och kritiska funktionerna i projektet.
+
+## Implementationsstatus
+
+Textflödesfunktionaliteten har nu implementerats enligt planen och omfattar följande komponenter:
+
+1. **TextFlow-klass** - En fristående utility-klass som hanterar all textflödeslogik
+2. **TextEditingPanel** - En användargränssnittskomponent för att länka och hantera textrutor
+3. **Canvas-integration** - Fullständig integration i Canvas-komponenten
+
+Implementationen följer i stort sett den plan som beskrivs nedan, med några modifieringar för att förbättra prestanda och användarupplevelse. Alla definierade acceptanskriterier har uppnåtts och funktionaliteten är fullt testad.
+
+### Tillgänglig kod
+
+- `/src/lib/utils/text-flow.js` - TextFlow-klassen för hantering av textflöde
+- `/src/lib/components/Editor/TextEditingPanel.svelte` - Gränssnittskomponent för text och textflöde
+- `/src/lib/utils/text-flow.test.js` - Testsuite för textflödesfunktionaliteten
 
 ## 1. Översikt
 

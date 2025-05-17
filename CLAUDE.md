@@ -22,7 +22,8 @@ PageStudio is a web-based InDesign alternative for creating magazine layouts and
 # Install dependencies
 npm install
 
-# Start development server
+# Start development server (will be run manually in a separate terminal)
+# Do NOT run this command using Claude - let the user run it manually
 npm run dev
 
 # Build for production
@@ -110,3 +111,14 @@ When implementing new features, follow these guidelines:
 4. Document complex algorithms or workflows with comments
 5. Ensure proper error handling for edge cases
 6. Test thoroughly with large documents for performance issues
+
+## External Documentation Access
+
+Claude has access to the Context7 MCP tools which provide up-to-date documentation for libraries used in this project. This enables:
+
+- Access to current documentation for frameworks and libraries
+- Ability to look up API references and usage examples 
+- Retrieving best practices from official documentation
+- Getting information about library versions and compatibility
+
+Use these capabilities when implementing features that require specific library knowledge.

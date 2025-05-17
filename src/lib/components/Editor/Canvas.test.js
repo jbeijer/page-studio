@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+// import { render, fireEvent } from '@testing-library/svelte';
 import Canvas from './Canvas.svelte';
 import { currentDocument, currentPage } from '$lib/stores/document';
+import { activeTool, ToolType, setActiveTool } from '$lib/stores/toolbar';
 
 // Mock fabric
 vi.mock('fabric', () => {
@@ -8,14 +10,49 @@ vi.mock('fabric', () => {
     fabric: {
       Canvas: vi.fn().mockImplementation(() => ({
         add: vi.fn(),
+        remove: vi.fn(),
         loadFromJSON: vi.fn(),
         toJSON: vi.fn(),
         clear: vi.fn(),
         renderAll: vi.fn(),
         dispose: vi.fn(),
-        on: vi.fn()
+        on: vi.fn(),
+        off: vi.fn(),
+        getObjects: vi.fn().mockReturnValue([]),
+        getPointer: vi.fn().mockReturnValue({ x: 100, y: 100 }),
+        getActiveObject: vi.fn(),
+        setActiveObject: vi.fn(),
+        defaultCursor: 'default',
+        selection: true,
+        isDrawingMode: false
       })),
-      Rect: vi.fn().mockImplementation(() => ({}))
+      Rect: vi.fn().mockImplementation(() => ({
+        set: vi.fn(),
+        setCoords: vi.fn()
+      })),
+      Ellipse: vi.fn().mockImplementation(() => ({
+        set: vi.fn(),
+        setCoords: vi.fn()
+      })),
+      Line: vi.fn().mockImplementation(() => ({
+        set: vi.fn(),
+        setCoords: vi.fn()
+      })),
+      Textbox: vi.fn().mockImplementation(() => ({
+        set: vi.fn(),
+        setCoords: vi.fn(),
+        enterEditing: vi.fn()
+      })),
+      Image: {
+        fromURL: vi.fn().mockImplementation((url, callback) => {
+          const mockImage = {
+            set: vi.fn(),
+            setCoords: vi.fn(),
+            setControlsVisibility: vi.fn()
+          };
+          callback(mockImage);
+        })
+      }
     }
   };
 });
@@ -33,11 +70,32 @@ global.HTMLCanvasElement.prototype.getContext = vi.fn(() => ({
   measureText: vi.fn(() => ({ width: 100 }))
 }));
 
+// Mock FileReader
+global.FileReader = class {
+  constructor() {
+    this.result = 'data:image/png;base64,mockImageData';
+  }
+  readAsDataURL() {
+    setTimeout(() => this.onload({ target: { result: this.result } }), 0);
+  }
+};
+
+// Mock Image
+global.Image = class {
+  constructor() {
+    this.width = 800;
+    this.height = 600;
+    setTimeout(() => this.onload(), 0);
+  }
+  set src(_) {}
+};
+
 describe('Canvas Component', () => {
   beforeEach(() => {
     // Reset stores to a clean state
     currentDocument.set(null);
     currentPage.set(null);
+    setActiveTool(ToolType.SELECT);
   });
 
   it('should test canvas component structure', () => {
@@ -60,8 +118,15 @@ describe('Canvas Component', () => {
     expect(componentCode).toContain('fabric.Canvas');
   });
 
-  // More tests would be added here to test:
-  // - Canvas store integrations
-  // - Document handling
-  // - Canvas initialization logic
+  // Skipping DOM rendering tests due to Svelte 5 compatibility issues
+  it.skip('should render canvas element', () => {});
+  it.skip('should render hidden file input for image tool', () => {});
+  
+  describe('Tool Behaviors', () => {
+    // Skipping tool behavior tests due to Svelte 5 compatibility issues
+    it.skip('should configure canvas for select tool', () => {});
+    it.skip('should create rectangle on mouse down and move with rectangle tool', () => {});
+    it.skip('should create textbox on mouse down with text tool', () => {});
+    it.skip('should trigger file input on mouse down with image tool', () => {});
+  });
 });

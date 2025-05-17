@@ -1,5 +1,7 @@
 <script>
   import { onMount } from 'svelte';
+  import DocumentList from '$lib/components/UI/DocumentList.svelte';
+  import { goto } from '$app/navigation';
   
   let title = "PageStudio";
   let ready = false;
@@ -7,6 +9,10 @@
   onMount(() => {
     ready = true;
   });
+  
+  function createNewDocument() {
+    goto('/editor');
+  }
 </script>
 
 <svelte:head>
@@ -22,45 +28,37 @@
     </div>
     
     <div class="flex gap-2">
-      <button class="btn btn-secondary">Open</button>
-      <button class="btn btn-primary">New Document</button>
+      <button class="btn btn-primary" on:click={createNewDocument}>New Document</button>
     </div>
   </header>
   
   <!-- Main content -->
-  <main class="flex-1 flex items-center justify-center bg-gray-50">
+  <main class="flex-1 overflow-y-auto bg-gray-50">
     {#if ready}
-      <div class="max-w-4xl p-8 text-center">
-        <h2 class="text-2xl font-bold mb-4">Welcome to PageStudio</h2>
-        <p class="text-gray-600 mb-8">A web-based InDesign alternative for creating beautiful publications.</p>
-        
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
-          <!-- Recent Projects Panel -->
-          <div class="bg-white p-6 rounded-lg shadow-md text-left">
-            <h3 class="font-semibold mb-4">Recent Projects</h3>
-            <p class="text-gray-500 text-sm italic">No recent projects yet</p>
-          </div>
-          
-          <!-- Templates Panel -->
-          <div class="bg-white p-6 rounded-lg shadow-md text-left">
-            <h3 class="font-semibold mb-4">Templates</h3>
-            <div class="grid grid-cols-2 gap-4">
-              <div class="p-4 border border-gray-200 rounded hover:border-primary cursor-pointer">
-                <div class="aspect-[1/1.414] bg-gray-100 mb-2 flex items-center justify-center">A4</div>
-                <p class="text-sm">Blank A4</p>
-              </div>
-              <div class="p-4 border border-gray-200 rounded hover:border-primary cursor-pointer">
-                <div class="aspect-[1/1.414] bg-gray-100 mb-2 flex items-center justify-center">A5</div>
-                <p class="text-sm">Blank A5</p>
-              </div>
-            </div>
-          </div>
+      <div class="max-w-6xl w-full p-8 mx-auto">
+        <div class="text-center mb-8">
+          <h2 class="text-2xl font-bold mb-4">Welcome to PageStudio</h2>
+          <p class="text-gray-600">A web-based InDesign alternative for creating beautiful publications.</p>
         </div>
         
-        <button class="btn btn-primary px-8 py-3">Create New Document</button>
+        <DocumentList />
+        
+        <div class="mt-12 p-6 bg-white rounded-lg shadow-md">
+          <h3 class="font-semibold mb-4">Templates</h3>
+          <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+            <button class="p-4 border border-gray-200 rounded hover:border-primary cursor-pointer text-left" on:click={createNewDocument}>
+              <div class="aspect-[1/1.414] bg-gray-100 mb-2 flex items-center justify-center">A4</div>
+              <p class="text-sm">Blank A4</p>
+            </button>
+            <button class="p-4 border border-gray-200 rounded hover:border-primary cursor-pointer text-left" on:click={createNewDocument}>
+              <div class="aspect-[1/1.414] bg-gray-100 mb-2 flex items-center justify-center">A5</div>
+              <p class="text-sm">Blank A5</p>
+            </button>
+          </div>
+        </div>
       </div>
     {:else}
-      <div class="text-center">
+      <div class="text-center p-8">
         <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-primary border-t-transparent"></div>
         <p class="mt-2">Loading...</p>
       </div>
