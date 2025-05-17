@@ -12,21 +12,13 @@ PageStudio är en webbaserad InDesign-ersättare för att skapa medlemstidningar
 - Mallsidor för återkommande element
 - PDF-export för tryck
 
-## Teknisk stack
-
-- SvelteKit för frontend-ramverk
-- Fabric.js för canvas-hantering
-- TailwindCSS för styling
-- IndexedDB för lokal lagring
-- jsPDF för PDF-generering
-
-## Utvecklingsmiljö
+## Snabbstart
 
 För att sätta upp utvecklingsmiljön:
 
 1. Klona repository
 ```bash
-git clone https://github.com/yourusername/page-studio.git
+git clone https://github.com/jbeijer/page-studio.git
 cd page-studio
 ```
 
@@ -42,22 +34,46 @@ npm run dev
 
 4. Besök `http://localhost:5173` i din webbläsare
 
-## Testning
+## Dokumentation
 
-PageStudio använder en testdriven utvecklingsprocess med:
+Utförlig dokumentation om projektet finns i [/docs](/docs/)-mappen:
+
+- Detaljerad implementationsplan
+- Teknisk arkitektur
+- UI-designguide
+- Teststrategi
+- Och mycket mer
+
+Se [/docs/README.md](/docs/README.md) för en fullständig lista över dokumentation.
+
+## Utvecklingskommandon
 
 ```bash
+# Utveckling
+npm run dev        # Starta utvecklingsserver
+
+# Bygg
+npm run build      # Bygg för produktion
+npm run preview    # Förhandsvisa produktionsbygge
+
+# Tester
 npm run test           # Kör enhetstester
-npm run test:component # Kör komponenttester
+npm run test:watch     # Kör tester i watch-läge
+npm run test:coverage  # Kör tester med kodtäckning
 npm run test:e2e       # Kör end-to-end tester
+
+# Typ-kontroll och lint
+npm run typecheck  # Kör typkontroll med svelte-check
+npm run lint       # Kör linting
 ```
 
-## Byggd med
+## Teknisk stack
 
-- [SvelteKit](https://kit.svelte.dev/)
-- [Fabric.js](http://fabricjs.com/)
-- [TailwindCSS](https://tailwindcss.com/)
-- [jsPDF](https://github.com/MrRio/jsPDF)
+- SvelteKit - Frontend-ramverk
+- Fabric.js - Canvas-manipulation
+- TailwindCSS - Styling
+- IndexedDB - Lokal lagring
+- jsPDF - PDF-generering
 
 ## Licens
 
