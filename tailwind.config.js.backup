@@ -1,0 +1,56 @@
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: ['./src/**/*.{html,js,svelte,ts}'],
+  theme: {
+    extend: {
+      colors: {
+        primary: {
+          DEFAULT: '#3B82F6',
+          hover: '#2563EB',
+          active: '#1D4ED8'
+        },
+        secondary: {
+          DEFAULT: '#6B7280',
+          hover: '#4B5563',
+          active: '#374151'
+        },
+        accent: {
+          green: '#10B981',
+          orange: '#F59E0B',
+          red: '#EF4444'
+        },
+        canvas: {
+          background: '#F9FAFB',
+          grid: '#E5E7EB',
+          guides: '#3B82F6',
+          selection: 'rgba(59, 130, 246, 0.3)'
+        },
+        gray: {
+          50: '#F9FAFB',
+          100: '#F3F4F6',
+          200: '#E5E7EB',
+          300: '#D1D5DB',
+          400: '#9CA3AF',
+          500: '#6B7280',
+          600: '#4B5563',
+          700: '#374151',
+          800: '#1F2937',
+          900: '#111827'
+        }
+      },
+      fontFamily: {
+        sans: ['Inter', 'sans-serif'],
+        mono: ['JetBrains Mono', 'monospace']
+      },
+      fontSize: {
+        'xs': '12px',
+        'sm': '14px',
+        'base': '16px',
+        'lg': '18px',
+        'xl': '20px',
+        '2xl': '24px'
+      }
+    }
+  },
+  plugins: []
+}

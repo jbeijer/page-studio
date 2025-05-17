@@ -1,0 +1,72 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom base styles */
+@layer base {
+  html, body {
+    height: 100%;
+    overflow: hidden;
+  }
+  
+  body {
+    font-family: 'Inter', sans-serif;
+    font-size: 16px;
+    line-height: 1.5;
+    color: #1F2937; /* gray-900 */
+  }
+  
+  h1, h2, h3, h4, h5, h6 {
+    font-weight: 600;
+  }
+}
+
+/* Custom component styles */
+@layer components {
+  .btn {
+    @apply px-4 py-2 rounded-md font-medium transition-colors duration-150;
+  }
+  
+  .btn-primary {
+    @apply bg-primary text-white hover:bg-primary-hover active:bg-primary-active;
+  }
+  
+  .btn-secondary {
+    @apply bg-white text-primary border border-primary hover:bg-primary/10 active:bg-primary/20;
+  }
+  
+  .btn-tertiary {
+    @apply bg-transparent text-primary hover:bg-primary/10 active:bg-primary/20;
+  }
+  
+  .tool-button {
+    @apply p-2 rounded-md text-secondary hover:bg-gray-200 active:bg-gray-300;
+  }
+  
+  .tool-button-active {
+    @apply bg-primary/10 text-primary hover:bg-primary/20 active:bg-primary/30;
+  }
+}
+
+/* Utilities */
+@layer utilities {
+  .editor-container {
+    @apply h-[calc(100vh-3rem)] flex flex-col;
+  }
+  
+  .canvas-container {
+    @apply bg-canvas-background flex-1 overflow-auto;
+  }
+  
+  .tools-panel {
+    @apply w-16 bg-gray-100 border-r border-gray-200 h-full flex flex-col items-center py-2 gap-2;
+  }
+  
+  .properties-panel {
+    @apply w-80 bg-gray-100 border-l border-gray-200 h-full overflow-y-auto p-4;
+  }
+  
+  .page-navigator {
+    @apply h-28 bg-gray-100 border-t border-gray-200 p-2 overflow-x-auto flex gap-2;
+  }
+}
