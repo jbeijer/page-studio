@@ -18,6 +18,7 @@
     loadGuides
   } from './Canvas.guides.js';
   import { loadDocument, saveDocument } from '$lib/utils/storage.js';
+  import { pageRecovery } from '$lib/utils/page-recovery.js';
   
   // Import modular components
   import { 
@@ -232,6 +233,7 @@
       canvasScrollY,
       zoomLevel,
       textFlow,
+      isReadyForAutoOps,
       
       // Utility functions
       dispatch,
@@ -243,7 +245,14 @@
       loadDocument,
       
       // Guide functions
-      refreshGuides: loadGuides.bind(null, canvas, $currentDocument, $currentPage)
+      refreshGuides: loadGuides.bind(null, canvas, $currentDocument, $currentPage),
+      
+      // Add version information
+      version: {
+        appVersion: "1.0.0", // Update with your actual version
+        fabricVersion: fabric.version || '5.3.0',
+        lastUpdated: new Date().toISOString()
+      }
     });
     
     // Initialize module handlers
@@ -295,6 +304,7 @@
       createObjectsManually: documentManagement.createObjectsManually,
       applyMasterPage: documentManagement.applyMasterPage,
       overrideMasterObject: documentManagement.overrideMasterObject,
+      getPageById: documentManagement.getPageById,
       
       // Guide management
       handleCreateGuide: guideManagement.handleCreateGuide,
@@ -310,6 +320,33 @@
       updateGridProperties: gridManagement.updateGridProperties
     });
     
+    // Store context in global scope for emergency recovery
+    window.$globalContext = context;
+    
+    // Add helper functions to window for debugging
+    if (typeof window !== 'undefined') {
+      window.$debugCanvas = {
+        getContext: () => window.$globalContext,
+        getCanvas: () => canvas,
+        getCurrentDocument: () => $currentDocument,
+        getCurrentPage: () => $currentPage,
+        getStatus: () => ({
+          hasCanvas: !!canvas,
+          hasDocument: !!$currentDocument,
+          hasPage: !!$currentPage,
+          isReady: isReadyForAutoOps,
+          objectCount: canvas ? canvas.getObjects().length : 0,
+          currentPageId: $currentPage
+        }),
+        forceSave: () => {
+          if (documentManagement && documentManagement.saveCurrentPage) {
+            return documentManagement.saveCurrentPage();
+          }
+          return false;
+        }
+      };
+    }
+    
     return context;
   }
   
@@ -317,6 +354,7 @@
   export const getCanvas = () => canvas;
   export const getSelectedObject = () => selectedObject;
   export const getTextFlow = () => textFlow;
+  export const getContext = () => window.$globalContext || null;
   
   // Direct exports of canvas functions
   export const bringForward = () => layerManagement?.bringForward();
@@ -332,8 +370,63 @@
   export const overrideMasterObject = (obj) => documentManagement?.overrideMasterObject(obj);
   export const isObjectFromMaster = (obj) => objectManipulation?.isObjectFromMaster(obj);
   export const getMasterPageObjects = () => objectManipulation?.getMasterPageObjects();
-  export const saveCurrentPage = () => documentManagement?.saveCurrentPage();
+  export const saveCurrentPage = () => {
+    if (!isReadyForAutoOps) {
+      console.warn("saveCurrentPage: Not ready (canvas, document eller page saknas)");
+      return false;
+    }
+    return documentManagement?.saveCurrentPage();
+  };
+
+  export const isCanvasReadyForAutoOps = () => isReadyForAutoOps;
+
+  // For external operations that need access to readiness state
+  export const getReadyStatus = () => ({
+    hasCanvas: !!canvas,
+    hasDocument: !!$currentDocument,
+    hasPage: !!$currentPage,
+    isReady: isReadyForAutoOps,
+    objectCount: canvas ? canvas.getObjects().length : 0
+  });
+
+  // Om forceSave/autosave-funktioner finns i denna fil, lägg liknande skydd där. Om de är externa, lägg skydd i anropen härifrån.
   export const saveSpecificPage = (pageId, objects) => documentManagement?.saveSpecificPage(pageId, objects);
+  
+  // Export recovery functions
+  // export { recoverCurrentPage }; - Now defined later in the file
+  export const getPageSnapshots = (pageId = $currentPage) => pageRecovery.getPageSnapshots(pageId);
+  export const forceSnapshot = () => {
+    if (!isReadyForAutoOps || !$currentPage) return false;
+    
+    // Create a snapshot function that captures the canvas state
+    const createSnapshot = () => {
+      if (!canvas) return null;
+      
+      try {
+        // Create a JSON snapshot of the canvas
+        const canvasData = canvas.toJSON([
+          'id', 
+          'linkedObjectIds', 
+          'fromMaster', 
+          'masterId', 
+          'masterObjectId', 
+          'overridable'
+        ]);
+        
+        return {
+          canvasJSON: JSON.stringify(canvasData),
+          pageId: $currentPage,
+          objectCount: canvasData.objects ? canvasData.objects.length : 0,
+          timestamp: Date.now()
+        };
+      } catch (err) {
+        console.error("Error creating page snapshot:", err);
+        return null;
+      }
+    };
+    
+    return pageRecovery.takeSnapshot(createSnapshot, $currentPage);
+  };
   export const recoverObjectsFromJson = (pageJson) => {
     if (!canvas) return 0;
     
@@ -388,6 +481,10 @@
     console.log(`| PAGE SWITCH: ${previousPage || 'null'} -> ${$currentPage} |`);
     console.log(`+==========================================+`);
     
+    // Track this operation with its own timestamp for debugging
+    const switchOperationId = Date.now();
+    console.log(`Page switch operation ID: ${switchOperationId}`);
+    
     // Store current page ID in the canvas object for direct reference
     canvas.pageId = $currentPage;
     
@@ -402,32 +499,64 @@
     }
     window.saveDocument = saveDocument;
     
+    // Update global debug helpers
+    window.$debugCanvas = {
+      ...(window.$debugCanvas || {}),
+      getCurrentPage: () => $currentPage,
+      getCurrentDocument: () => $currentDocument,
+      getObjectCount: () => canvas ? canvas.getObjects().length : 0,
+      getSaveStatus: () => ({
+        previousPage,
+        currentPage: $currentPage,
+        hasCanvas: !!canvas,
+        pageIndex: $currentDocument ? $currentDocument.pages.findIndex(p => p.id === $currentPage) : -1,
+        pageCount: $currentDocument ? $currentDocument.pages.length : 0,
+        operation: switchOperationId
+      })
+    };
+    
     console.log(`Canvas state before page switch:`, {
       hasCanvas: !!canvas,
       objectCount: canvas ? canvas.getObjects().length : 0,
       previousPageId: previousPage,
       newPageId: $currentPage,
       documentId: $currentDocument ? $currentDocument.id : 'null', 
-      pageCount: $currentDocument ? $currentDocument.pages.length : 0
+      pageCount: $currentDocument ? $currentDocument.pages.length : 0,
+      operationId: switchOperationId
     });
     
+    // Always ensure we're working with latest document data
+    // Use a safety variable to avoid infinite recursion
+    let isPageSwitching = true;
+    
     // Only save the previous page if we had one
-    if (previousPage) {
-      console.log(`SAVE PHASE: Saving previous page ${previousPage} before switching`);
+    if (previousPage && isPageSwitching) {
+      console.log(`SAVE PHASE [${switchOperationId}]: Saving previous page ${previousPage} before switching`);
       
-      // Save the current page to the correct previous page ID
+      // Double-check that document is actually defined and has pages
+      if (!$currentDocument || !Array.isArray($currentDocument.pages)) {
+        console.error("SAVE PHASE: Document or pages is undefined/null!");
+        
+        // Try to recover from window.$document if available
+        if (window.$document && Array.isArray(window.$document.pages)) {
+          console.log("SAVE PHASE: Recovering document from window.$document");
+          currentDocument.set(window.$document);
+        }
+      }
+      
+      // Verify the document has the previous page
       const pageToSaveIndex = $currentDocument.pages.findIndex(p => p.id === previousPage);
       
-      console.log(`Page index in document: ${pageToSaveIndex}`);
+      console.log(`SAVE PHASE [${switchOperationId}]: Page index in document: ${pageToSaveIndex}`);
       
       if (pageToSaveIndex >= 0) {
         // Force save of current page with additional verification
         const currentObjects = canvas.getObjects();
-        console.log(`SAVE PHASE: Currently ${currentObjects.length} objects on canvas before saving page ${previousPage}`);
+        console.log(`SAVE PHASE [${switchOperationId}]: Currently ${currentObjects.length} objects on canvas before saving page ${previousPage}`);
         
         if (currentObjects.length > 0) {
           // Log each object on the canvas for detailed debugging
-          console.log(`SAVE PHASE: Object details:`);
+          console.log(`SAVE PHASE [${switchOperationId}]: Object details:`);
           currentObjects.forEach((obj, idx) => {
             console.log(`  Object #${idx}:`, {
               type: obj.type,
@@ -444,55 +573,201 @@
         
         try {
           // Use a dedicated function to save a specific page
-          console.log(`SAVE PHASE: Calling saveSpecificPage for ${previousPage}`);
-          saveSpecificPage(previousPage, canvas.getObjects());
+          console.log(`SAVE PHASE [${switchOperationId}]: Calling saveSpecificPage for ${previousPage}`);
           
-          console.log(`SAVE PHASE: Successfully saved page ${previousPage} with ${currentObjects.length} objects`);
+          // Make a safe copy of objects in case they get modified
+          const objectsToSave = currentObjects.map(obj => obj);
+          saveSpecificPage(previousPage, objectsToSave);
+          
+          console.log(`SAVE PHASE [${switchOperationId}]: Successfully saved page ${previousPage} with ${objectsToSave.length} objects`);
+          
+          // Create a backup snapshot for recovery if needed
+          window.$previousPageBackup = {
+            pageId: previousPage,
+            timestamp: Date.now(),
+            objectCount: objectsToSave.length,
+            canvasJSON: JSON.stringify(canvas.toJSON([
+              'id', 'linkedObjectIds', 'fromMaster', 'masterId', 'masterObjectId', 'overridable'
+            ]))
+          };
         } catch (err) {
-          console.error(`SAVE PHASE: Error saving page ${previousPage}:`, err);
+          console.error(`SAVE PHASE [${switchOperationId}]: Error saving page ${previousPage}:`, err);
+          
+          // Create emergency backup if save fails
+          try {
+            window.$emergencyBackup = {
+              pageId: previousPage,
+              timestamp: Date.now(),
+              errorMessage: err.message,
+              canvasJSON: JSON.stringify(canvas.toJSON([
+                'id', 'linkedObjectIds', 'fromMaster', 'masterId', 'masterObjectId', 'overridable'
+              ]))
+            };
+            
+            console.log(`SAVE PHASE [${switchOperationId}]: Created emergency backup for page ${previousPage}`);
+          } catch (backupErr) {
+            console.error(`SAVE PHASE [${switchOperationId}]: Even emergency backup failed:`, backupErr);
+          }
         }
       } else {
-        console.error(`SAVE PHASE ERROR: Could not find page ${previousPage} in document to save`);
+        console.error(`SAVE PHASE [${switchOperationId}] ERROR: Could not find page ${previousPage} in document to save`);
+        
+        // Try to create the page if it's missing
+        console.log(`SAVE PHASE [${switchOperationId}]: Attempting to create missing page ${previousPage}`);
+        
+        try {
+          // Get current objects
+          const objects = canvas.getObjects();
+          
+          // Create the page data
+          const canvasData = {
+            objects: objects.length > 0 ? objects.map(obj => obj.toJSON([
+              'id', 'linkedObjectIds', 'fromMaster', 'masterId', 'masterObjectId', 'overridable'
+            ])) : [],
+            background: canvas.backgroundColor || 'white',
+            version: "4.6.0"
+          };
+          
+          // Create a new page in the document
+          const newPage = {
+            id: previousPage,
+            canvasJSON: JSON.stringify(canvasData),
+            masterPageId: null,
+            overrides: {},
+            guides: {
+              horizontal: [],
+              vertical: []
+            }
+          };
+          
+          // Update the document
+          currentDocument.update(doc => {
+            // Check if page already exists (double-check)
+            if (doc.pages.some(p => p.id === previousPage)) {
+              console.log(`SAVE PHASE [${switchOperationId}]: Page ${previousPage} now exists, updating it`);
+              return {
+                ...doc,
+                pages: doc.pages.map(p => p.id === previousPage ? {
+                  ...p,
+                  canvasJSON: newPage.canvasJSON
+                } : p),
+                lastModified: new Date()
+              };
+            } else {
+              console.log(`SAVE PHASE [${switchOperationId}]: Adding missing page ${previousPage} to document`);
+              return {
+                ...doc,
+                pages: [...doc.pages, newPage],
+                lastModified: new Date()
+              };
+            }
+          });
+          
+          console.log(`SAVE PHASE [${switchOperationId}]: Successfully added/updated missing page ${previousPage}`);
+        } catch (createErr) {
+          console.error(`SAVE PHASE [${switchOperationId}] ERROR: Failed to create missing page:`, createErr);
+        }
       }
       
       // Add a forced save to document store to ensure persistence
-      console.log("SAVE PHASE: Forcing document save to ensure data persistence");
+      console.log(`SAVE PHASE [${switchOperationId}]: Forcing document save to ensure data persistence`);
       currentDocument.update(doc => {
         return { ...doc, lastModified: new Date() };
       });
     }
     
-      console.log("TRANSITION PHASE: Starting page switching sequence");
+    console.log(`TRANSITION PHASE [${switchOperationId}]: Starting page switching sequence`);
     
     // Update tracking variables
-    console.log("TRANSITION PHASE: Updating tracking variables");
+    console.log(`TRANSITION PHASE [${switchOperationId}]: Updating tracking variables`);
     const oldPage = previousPage;
     previousPage = $currentPage;
     
     // Clear the canvas to prepare for new page
-    console.log("TRANSITION PHASE: Clearing canvas");
+    console.log(`TRANSITION PHASE [${switchOperationId}]: Clearing canvas`);
     canvas.clear();
     canvas.backgroundColor = 'white';
     canvas.renderAll();
     
     // Verify canvas is truly cleared
     const objectsAfterClear = canvas.getObjects();
-    console.log(`TRANSITION PHASE: Canvas after clear has ${objectsAfterClear.length} objects`);
+    console.log(`TRANSITION PHASE [${switchOperationId}]: Canvas after clear has ${objectsAfterClear.length} objects`);
     
-    // Load the new page directly using our radical approach
-    console.log(`+-------------------------------------+`);
-    console.log(`| LOAD PHASE: Loading page ${$currentPage} |`);
-    console.log(`+-------------------------------------+`);
-    console.log(`LOAD PHASE: Calling loadPage() with shouldSaveFirst=false`);
+    // Make sure canvas has correct size
+    console.log(`TRANSITION PHASE [${switchOperationId}]: Ensuring canvas has correct dimensions`);
+    if (canvas.width !== width || canvas.height !== height) {
+      console.log(`TRANSITION PHASE [${switchOperationId}]: Resizing canvas from ${canvas.width}x${canvas.height} to ${width}x${height}`);
+      canvas.setWidth(width);
+      canvas.setHeight(height);
+    }
+    
+    // Load the new page directly using our proven approach
+    console.log(`+--------------------------------------------+`);
+    console.log(`| LOAD PHASE [${switchOperationId}]: Loading page ${$currentPage} |`);
+    console.log(`+--------------------------------------------+`);
+    console.log(`LOAD PHASE [${switchOperationId}]: Calling loadPage() with shouldSaveFirst=false`);
     
     // Track loading time for debugging
     const loadStartTime = performance.now();
     
+    // Create a safety mechanism in case the load fails
+    let loadTimeoutId = setTimeout(() => {
+      console.error(`LOAD PHASE [${switchOperationId}] ERROR: Page load timed out after 5000ms`);
+      
+      // Emergency recovery - try to manually load the page
+      try {
+        console.log(`LOAD PHASE [${switchOperationId}]: Emergency recovery attempt`);
+        
+        // Find the page in the document
+        if ($currentDocument && $currentDocument.pages) {
+          const pageToLoad = $currentDocument.pages.find(p => p.id === $currentPage);
+          
+          if (pageToLoad && pageToLoad.canvasJSON) {
+            console.log(`LOAD PHASE [${switchOperationId}]: Found page ${$currentPage} in document, attempting manual load`);
+            
+            // Parse JSON data
+            const jsonData = JSON.parse(pageToLoad.canvasJSON);
+            
+            // Clear canvas and set background
+            canvas.clear();
+            canvas.backgroundColor = jsonData.background || 'white';
+            
+            // If page has objects, attempt to recover them
+            if (jsonData.objects && jsonData.objects.length > 0) {
+              // Use recovery method
+              const recovered = recoverObjectsFromJson(pageToLoad.canvasJSON);
+              console.log(`LOAD PHASE [${switchOperationId}]: Emergency recovery created ${recovered} objects`);
+            }
+            
+            // Force render
+            canvas.requestRenderAll();
+            canvas.renderAll();
+            
+            // Schedule another render for reliability
+            setTimeout(() => {
+              canvas.requestRenderAll();
+              canvas.renderAll();
+            }, 100);
+          } else {
+            console.error(`LOAD PHASE [${switchOperationId}] ERROR: Could not find page ${$currentPage} in document for emergency recovery`);
+          }
+        }
+      } catch (recoveryErr) {
+        console.error(`LOAD PHASE [${switchOperationId}] ERROR: Emergency recovery failed:`, recoveryErr);
+      }
+    }, 5000);
+    
     documentManagement.loadPage($currentPage, false).then(() => {
       const loadDuration = performance.now() - loadStartTime;
-      console.log(`LOAD PHASE: loadPage() completed in ${loadDuration.toFixed(2)}ms`);
+      console.log(`LOAD PHASE [${switchOperationId}]: loadPage() completed in ${loadDuration.toFixed(2)}ms`);
+      
+      // Clear the safety timeout
+      clearTimeout(loadTimeoutId);
     }).catch(err => {
-      console.error("LOAD PHASE ERROR: Failed to load page:", err);
+      console.error(`LOAD PHASE [${switchOperationId}] ERROR: Failed to load page:`, err);
+      
+      // Clear the safety timeout since we already hit an error
+      clearTimeout(loadTimeoutId);
       
       // Fallback to a clean canvas if loading fails
       if (canvas) {
@@ -504,15 +779,15 @@
     
     // Force render cycles with a single delay
     setTimeout(() => {
-      console.log("FINAL PHASE: Final visibility check");
+      console.log(`FINAL PHASE [${switchOperationId}]: Final visibility check`);
       
       if (canvas) {
         // Force rerender all objects
         const objects = canvas.getObjects();
-        console.log(`FINAL PHASE: Found ${objects.length} objects for final check`);
+        console.log(`FINAL PHASE [${switchOperationId}]: Found ${objects.length} objects for final check`);
         
         if (objects.length > 0) {
-          console.log(`FINAL PHASE: Object details for verification:`);
+          console.log(`FINAL PHASE [${switchOperationId}]: Object details for verification:`);
           objects.forEach((obj, idx) => {
             console.log(`  Object #${idx}:`, {
               type: obj.type,
@@ -535,15 +810,38 @@
         }
         
         // Force render
-        console.log("FINAL PHASE: Forcing final render");
+        console.log(`FINAL PHASE [${switchOperationId}]: Forcing final render`);
         canvas.requestRenderAll();
         canvas.renderAll();
         
-        // Log final state
-        const finalObjects = canvas.getObjects();
-        console.log(`+-----------------------------------------------+`);
-        console.log(`| PAGE SWITCH COMPLETE: ${finalObjects.length} objects on canvas |`);
-        console.log(`+-----------------------------------------------+`);
+        // Update global references one more time
+        window.$page = $currentPage;
+        window.$document = $currentDocument;
+        window.$canvas = canvas;
+        
+        // Schedule a final check to make sure everything is correct
+        setTimeout(() => {
+          // Verify canvas objects one more time
+          const finalObjects = canvas.getObjects();
+          console.log(`FINAL VERIFICATION [${switchOperationId}]: Canvas has ${finalObjects.length} objects`);
+          
+          // Make sure the objects are still visible
+          finalObjects.forEach(obj => {
+            if (!obj.visible) {
+              console.warn(`FINAL VERIFICATION [${switchOperationId}]: Object ${obj.id} visibility lost, restoring`);
+              obj.visible = true;
+            }
+          });
+          
+          // Final render
+          canvas.requestRenderAll();
+          canvas.renderAll();
+          
+          // Log final state
+          console.log(`+---------------------------------------------------------------+`);
+          console.log(`| PAGE SWITCH [${switchOperationId}] COMPLETE: ${finalObjects.length} objects on canvas |`);
+          console.log(`+---------------------------------------------------------------+`);
+        }, 1000);
       }
     }, 500);
   }
@@ -563,8 +861,236 @@
   }
   
   function refreshGuides() {
+    if (!isReadyForAutoOps) {
+      console.warn("refreshGuides: Not ready (canvas, document eller page saknas)");
+      return;
+    }
     guideManagement.loadGuidesFromDocument();
   }
+
+  import { canvasReady, canvasReadyStatus, updateCanvasReadyStatus, resetCanvasReady } from '$lib/stores/canvasReady.js';
+let isReadyForAutoOps = false;
+let hasActiveObjects = false;
+
+// Define basic readiness (having canvas, document and page)
+$: isReadyForAutoOps = !!(canvas && $currentDocument && $currentPage);
+
+// Track canvas object count for additional readiness information
+$: hasActiveObjects = canvas ? canvas.getObjects().length > 0 : false;
+
+// Set up page recovery initialization to happen safely in component context
+onMount(() => {
+  // Set up a function that will check and initialize recovery when ready
+  const initRecoveryWhenReady = () => {
+    if (isReadyForAutoOps) {
+      console.log("Canvas onMount: Initializing page recovery (inside component context)");
+      initializePageRecovery();
+    } else {
+      // Try again in a bit
+      setTimeout(initRecoveryWhenReady, 1000);
+    }
+  };
+  
+  // Start the initialization process
+  setTimeout(initRecoveryWhenReady, 1000);
+});
+
+// Update the canvasReady store and detailed status
+$: {
+  canvasReady.set(isReadyForAutoOps);
+  
+  // Update the detailed status
+  updateCanvasReadyStatus({
+    hasCanvas: !!canvas,
+    hasDocument: !!$currentDocument,
+    hasPage: !!$currentPage,
+    isFullyInitialized: isMounted && !!canvas,
+    hasActiveObjects,
+    hasError: false,
+    errorMessage: null
+  });
+}
+
+// Log canvas readiness changes for debugging
+$: console.log(`Canvas readiness changed: ${isReadyForAutoOps ? 'READY' : 'NOT READY'}, objects: ${hasActiveObjects ? 'YES' : 'NO'}`);
+
+// Set error state when appropriate
+function setCanvasError(message) {
+  updateCanvasReadyStatus({
+    hasError: true,
+    errorMessage: message
+  });
+  console.error(`Canvas error: ${message}`);
+}
+
+/**
+ * Initialize page recovery system
+ */
+function initializePageRecovery() {
+  // If we're not ready for auto operations, we'll skip initialization
+  // The onMount handler will take care of initializing when ready
+  if (!isReadyForAutoOps) {
+    console.log("Skipping page recovery initialization - component will retry later");
+    return;
+  }
+  
+  console.log("Initializing page recovery system");
+  
+  // Create a snapshot function that captures the canvas state
+  const createSnapshot = () => {
+    if (!canvas || !$currentPage) return null;
+    
+    try {
+      // Create a JSON snapshot of the canvas
+      const canvasData = canvas.toJSON([
+        'id', 
+        'linkedObjectIds', 
+        'fromMaster', 
+        'masterId', 
+        'masterObjectId', 
+        'overridable'
+      ]);
+      
+      return {
+        canvasJSON: JSON.stringify(canvasData),
+        pageId: $currentPage,
+        objectCount: canvasData.objects ? canvasData.objects.length : 0,
+        timestamp: Date.now()
+      };
+    } catch (err) {
+      console.error("Error creating page snapshot:", err);
+      return null;
+    }
+  };
+  
+  // Create a recovery function that applies a snapshot to the canvas
+  const applySnapshot = (snapshot) => {
+    if (!canvas || !snapshot || !snapshot.canvasJSON) return false;
+    
+    try {
+      console.log(`Applying recovery snapshot with ${snapshot.objectCount} objects`);
+      
+      // Apply the snapshot to the canvas using our recovery function
+      const recoveredCount = recoverObjectsFromJson(snapshot.canvasJSON);
+      
+      if (recoveredCount > 0) {
+        console.log(`Successfully recovered ${recoveredCount} objects from snapshot`);
+        
+        // Save the recovered page immediately
+        setTimeout(() => {
+          if (documentManagement && documentManagement.saveCurrentPage) {
+            documentManagement.saveCurrentPage();
+            console.log("Saved recovered page");
+          }
+        }, 500);
+        
+        return true;
+      } else {
+        console.warn("Recovery failed: No objects recovered from snapshot");
+        return false;
+      }
+    } catch (err) {
+      console.error("Error applying recovery snapshot:", err);
+      return false;
+    }
+  };
+  
+  // Start taking periodic snapshots if the recovery system is enabled
+  if ($currentPage) {
+    pageRecovery.startSnapshots(createSnapshot, $currentPage);
+  }
+  
+  // Set up a safe default no-op function
+  let pageUnsubscribe = () => {};
+  
+  // Subscribe to page changes to update recovery system - safely wrapped in try/catch
+  try {
+    pageUnsubscribe = currentPage.subscribe(pageId => {
+      if (pageId && canvas) {
+        console.log(`Updating recovery system for page ${pageId}`);
+        pageRecovery.stopSnapshots(); // Stop any existing snapshots first
+        pageRecovery.startSnapshots(createSnapshot, pageId);
+        
+        // Take an immediate snapshot after a page switch
+        setTimeout(() => {
+          if (isReadyForAutoOps && canvas && canvas.getObjects && canvas.getObjects().length > 0) {
+            pageRecovery.takeSnapshot(createSnapshot, pageId);
+          }
+        }, 2000);
+      }
+    });
+  } catch (err) {
+    console.warn("Could not subscribe to page changes for recovery (possibly outside component context)", err);
+  }
+  
+  // Take an initial snapshot
+  setTimeout(() => {
+    if (isReadyForAutoOps && $currentPage && canvas.getObjects().length > 0) {
+      console.log("Taking initial recovery snapshot");
+      pageRecovery.takeSnapshot(createSnapshot, $currentPage);
+    }
+  }, 5000);
+  
+  // Export recovery functions to the window for debugging and manual recovery
+  window.$pageRecovery = {
+    takeSnapshot: () => pageRecovery.takeSnapshot(createSnapshot, $currentPage),
+    getSnapshots: () => pageRecovery.getPageSnapshots($currentPage),
+    recover: () => pageRecovery.recoverPage($currentPage, applySnapshot),
+    clear: () => pageRecovery.clearSnapshots($currentPage)
+  };
+  
+  // Clean up on unmount - safely handled through a try/catch
+  try {
+    onDestroy(() => {
+      pageRecovery.stopSnapshots();
+      pageUnsubscribe();
+    });
+  } catch (err) {
+    console.warn("Could not register unmount cleanup for page recovery (likely called outside component context)");
+  }
+}
+
+/**
+ * Try to recover the current page from a snapshot
+ * @returns {boolean} Whether recovery was successful
+ */
+export function recoverCurrentPage() {
+  if (!$currentPage || !isReadyForAutoOps) return false;
+  
+  console.log(`Attempting to recover page ${$currentPage} from snapshot`);
+  
+  // Create the recovery function
+  const applySnapshot = (snapshot) => {
+    if (!canvas || !snapshot || !snapshot.canvasJSON) return false;
+    
+    try {
+      // Apply the snapshot to the canvas
+      const recoveredCount = recoverObjectsFromJson(snapshot.canvasJSON);
+      
+      if (recoveredCount > 0) {
+        console.log(`Successfully recovered ${recoveredCount} objects from snapshot`);
+        
+        // Save the recovered page 
+        setTimeout(() => {
+          if (documentManagement && documentManagement.saveCurrentPage) {
+            documentManagement.saveCurrentPage();
+          }
+        }, 500);
+        
+        return true;
+      } else {
+        console.warn("Recovery failed: No objects recovered from snapshot");
+        return false;
+      }
+    } catch (err) {
+      console.error("Error applying recovery snapshot:", err);
+      return false;
+    }
+  };
+  
+  // Attempt recovery
+  return pageRecovery.recoverPage($currentPage, applySnapshot);
+}
 
   onMount(() => {
     isMounted = true;
@@ -584,6 +1110,14 @@
     
     // Initialize Fabric.js canvas with the given dimensions using our helper
     try {
+      // Update canvas status to initializing
+      updateCanvasReadyStatus({
+        hasCanvas: false,
+        isFullyInitialized: false,
+        hasError: false,
+        errorMessage: "Canvas initializing..."
+      });
+      
       canvas = createCanvas(canvasElement, {
         width,
         height,
@@ -595,19 +1129,75 @@
       if (!canvas) {
         throw new Error("Failed to create canvas");
       }
+      
+      // Update canvas status to success
+      updateCanvasReadyStatus({
+        hasCanvas: true,
+        isFullyInitialized: true,
+        hasError: false,
+        errorMessage: null
+      });
+      
+      console.log("Canvas initialized successfully");
     } catch (error) {
       console.error("Canvas initialization failed:", error);
+      setCanvasError(`Canvas initialization failed: ${error.message}`);
       
       // Last resort fallback - try direct initialization with different approach
       try {
+        console.log("Attempting fallback canvas initialization...");
+        
         canvas = new fabric.Canvas(canvasElement);
         canvas.setWidth(width);
         canvas.setHeight(height);
         canvas.selection = true;
         canvas.preserveObjectStacking = true;
         canvas.backgroundColor = 'white';
+        
+        // If we get here, we were successful
+        updateCanvasReadyStatus({
+          hasCanvas: true,
+          isFullyInitialized: true,
+          hasError: false,
+          errorMessage: null
+        });
+        
+        console.log("Canvas fallback initialization succeeded");
       } catch (fallbackError) {
         console.error("Canvas fallback initialization also failed:", fallbackError);
+        setCanvasError(`Canvas fallback initialization failed: ${fallbackError.message}`);
+        
+        // Create a recovery interval that keeps trying to initialize the canvas
+        const recoveryAttempt = setInterval(() => {
+          console.log("Attempting canvas recovery...");
+          try {
+            // Try one more time with a different approach
+            if (!canvas) {
+              canvas = fabric.StaticCanvas ? new fabric.StaticCanvas(canvasElement) : new fabric.Canvas(canvasElement);
+              canvas.setWidth(width);
+              canvas.setHeight(height);
+              canvas.backgroundColor = 'white';
+              
+              console.log("Canvas recovery succeeded");
+              updateCanvasReadyStatus({
+                hasCanvas: true,
+                isFullyInitialized: true,
+                hasError: false,
+                errorMessage: null
+              });
+              
+              clearInterval(recoveryAttempt);
+            }
+          } catch (recoveryError) {
+            console.error("Canvas recovery attempt failed:", recoveryError);
+          }
+        }, 1000);
+        
+        // Stop trying after 10 seconds
+        setTimeout(() => {
+          clearInterval(recoveryAttempt);
+          console.error("Canvas recovery abandoned after timeout");
+        }, 10000);
       }
     }
     
@@ -666,7 +1256,14 @@
     }
     
     // Initialize guides for current page
-    refreshGuides();
+    if (isReadyForAutoOps) {
+      refreshGuides();
+    } else {
+      console.warn("refreshGuides: Skipped vid init, ej redo");
+    }
+    
+    // Initialize page recovery system via onMount to ensure component context
+    // Will be initialized by the onMount callback we set up elsewhere
     
     // Create a derived store to update context when store values change
     $: {
@@ -682,15 +1279,46 @@
     }
     
     return () => {
+      console.log("Canvas component unmounting, cleaning up resources");
+      
+      // Reset canvas readiness state
+      resetCanvasReady();
+      
       // Clean up canvas on component unmount
-      eventHandlers.removeEventHandlers();
-      
-      // Clean up history manager
-      if (historyManager) {
-        historyManager.dispose();
+      try {
+        // Remove event handlers first
+        if (eventHandlers && typeof eventHandlers.removeEventHandlers === 'function') {
+          console.log("Removing event handlers");
+          eventHandlers.removeEventHandlers();
+        } else {
+          console.warn("No eventHandlers.removeEventHandlers function available");
+        }
+        
+        // Clean up history manager
+        if (historyManager) {
+          console.log("Disposing history manager");
+          historyManager.dispose();
+        }
+        
+        // Finally dispose the canvas
+        if (canvas) {
+          console.log("Disposing canvas");
+          canvas.dispose();
+          canvas = null;
+        }
+        
+        // Clear global references
+        window.$canvas = null;
+        window.$globalContext = null;
+        
+        // Stop page recovery (this is redundant with the onDestroy in initializePageRecovery)
+        // but included as a safety measure
+        pageRecovery.stopSnapshots();
+        
+        console.log("Canvas cleanup complete");
+      } catch (err) {
+        console.error("Error during canvas cleanup:", err);
       }
-      
-      canvas.dispose();
     };
   });
 </script>

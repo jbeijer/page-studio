@@ -161,6 +161,8 @@ export function createEventHandlers(context) {
       }
       
       canvas.add(drawingObject);
+      canvas.requestRenderAll();
+      console.log("Rectangle created:", drawingObject);
     } catch (error) {
       console.error("ERROR: Error creating rectangle:", error);
       drawingObject = null;

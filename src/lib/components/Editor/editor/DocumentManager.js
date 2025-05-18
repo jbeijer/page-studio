@@ -50,6 +50,9 @@ export function createDocumentManager(context) {
       
       console.log(`Document loaded successfully. Title: "${loadedDocument.title}", ${loadedDocument.pages.length} pages`);
       
+      // Check and ensure document has valid page structure
+      ensureValidDocumentStructure(loadedDocument);
+      
       // Log information about each page's canvas data
       if (loadedDocument.pages) {
         loadedDocument.pages.forEach((page, index) => {
@@ -64,30 +67,49 @@ export function createDocumentManager(context) {
               }
             } catch (err) {
               console.error(`Error parsing canvasJSON for page ${page.id}:`, err);
+              
+              // Auto-repair invalid JSON
+              page.canvasJSON = JSON.stringify({
+                version: "4.6.0",
+                objects: [],
+                background: "white"
+              });
+              console.log(`Auto-repaired invalid JSON for page ${page.id}`);
             }
           } else {
             console.warn(`Page ${index} (${page.id}) has no canvasJSON in loaded document`);
+            
+            // Initialize with empty canvas data
+            page.canvasJSON = JSON.stringify({
+              version: "4.6.0",
+              objects: [],
+              background: "white"
+            });
           }
         });
       }
+      
+      // Store the loaded document in window for recovery
+      window.$loadedDocument = JSON.parse(JSON.stringify(loadedDocument));
       
       // IMPORTANT: Delay document loading to ensure the canvas is fully initialized
       console.log("Delaying document loading to ensure canvas is fully initialized");
       
       // First set a temporary document to initialize components
-      // Copy all pages from the loaded document to preserve structure
+      // Explicitly create a deep copy of pages to ensure they're independent
+      const tempPages = loadedDocument.pages.map(page => ({
+        ...page,
+        canvasJSON: page.canvasJSON,
+        masterPageId: page.masterPageId,
+        overrides: page.overrides || {},
+        guides: page.guides || { horizontal: [], vertical: [] }
+      }));
+      
+      // Set temporary document with complete page structure
       setCurrentDocument({
         id: 'temp-doc',
         title: 'Loading...',
-        // Use the actual pages from the loaded document to preserve page structure
-        pages: loadedDocument.pages || [{
-          id: 'loading-page',
-          canvasJSON: JSON.stringify({
-            version: "4.6.0",
-            objects: [],
-            background: "white"
-          })
-        }],
+        pages: tempPages,
         masterPages: loadedDocument.masterPages || [],
         created: new Date(),
         lastModified: new Date(),
@@ -98,16 +120,41 @@ export function createDocumentManager(context) {
       });
       
       // Also make sure we always set a current page
-      if (loadedDocument.pages && loadedDocument.pages.length > 0 && !get(currentPage)) {
-        // Set first page as active
-        currentPage.set(loadedDocument.pages[0].id);
+      if (loadedDocument.pages && loadedDocument.pages.length > 0) {
+        const previousPage = get(currentPage);
+        const isNewPage = !previousPage || previousPage === 'loading-page';
+        
+        // Only set if we don't have a valid page already
+        if (isNewPage) {
+          // Set first page as active
+          console.log(`Setting initial page to ${loadedDocument.pages[0].id}`);
+          currentPage.set(loadedDocument.pages[0].id);
+        } else {
+          // We already have a page selected - check if it exists in the loaded document
+          const pageExists = loadedDocument.pages.some(page => page.id === previousPage);
+          if (!pageExists) {
+            console.log(`Selected page ${previousPage} not found in loaded document, setting to first page`);
+            currentPage.set(loadedDocument.pages[0].id);
+          } else {
+            console.log(`Keeping current page selection: ${previousPage}`);
+          }
+        }
       }
+      
+      // Store global references for backup and recovery
+      window.$document = loadedDocument;
+      window.$page = get(currentPage);
       
       // Return a promise that resolves when the document is fully loaded
       return new Promise(resolve => {
         // Then set the actual document after a delay
         setTimeout(() => {
           console.log("Now setting the actual document after canvas initialization");
+          
+          // Ensure the document structure is still valid
+          ensureValidDocumentStructure(loadedDocument);
+          
+          // Set the document in the store
           setCurrentDocument(loadedDocument);
           
           // Force canvas refresh after another small delay
@@ -122,7 +169,19 @@ export function createDocumentManager(context) {
                 console.log(`Setting default page to ${loadedDocument.pages[0].id}`);
                 currentPage.set(loadedDocument.pages[0].id);
               }
+              
+              // Update window.$page with current page
+              window.$page = get(currentPage);
             }
+            
+            // Update the document one last time to ensure everything is saved
+            updateDocument({
+              ...loadedDocument,
+              lastModified: new Date()
+            });
+            
+            // Update window reference after ensuring everything is loaded
+            window.$document = get(currentDocument);
             
             resolve(loadedDocument);
           }, 200);
@@ -133,6 +192,141 @@ export function createDocumentManager(context) {
       createNewDocument();
       return null;
     }
+  }
+  
+  /**
+   * Ensures a document has a valid structure
+   * Repairs any missing or incorrect properties
+   * 
+   * @param {Object} doc - The document to validate/repair
+   */
+  function ensureValidDocumentStructure(doc) {
+    if (!doc) return;
+    
+    console.log("Validating document structure");
+    
+    // Ensure the document has a pages array
+    if (!doc.pages) {
+      console.warn("Document missing pages array, creating empty array");
+      doc.pages = [];
+    }
+    
+    // Ensure pages array is actually an array
+    if (!Array.isArray(doc.pages)) {
+      console.warn("Document pages is not an array, converting to array");
+      doc.pages = Object.values(doc.pages) || [];
+    }
+    
+    // Add a page if pages array is empty
+    if (doc.pages.length === 0) {
+      console.warn("Document has no pages, adding a default page");
+      doc.pages.push({
+        id: 'page-1',
+        canvasJSON: JSON.stringify({
+          version: "4.6.0",
+          objects: [],
+          background: "white"
+        }),
+        masterPageId: null,
+        overrides: {},
+        guides: {
+          horizontal: [],
+          vertical: []
+        }
+      });
+    }
+    
+    // Ensure each page has required properties
+    doc.pages.forEach((page, index) => {
+      if (!page.id) {
+        console.warn(`Page at index ${index} missing ID, generating new ID`);
+        page.id = `page-${index + 1}`;
+      }
+      
+      if (!page.canvasJSON) {
+        console.warn(`Page ${page.id} missing canvasJSON, setting empty canvas`);
+        page.canvasJSON = JSON.stringify({
+          version: "4.6.0",
+          objects: [],
+          background: "white"
+        });
+      }
+      
+      if (!page.overrides) {
+        console.warn(`Page ${page.id} missing overrides, initializing empty object`);
+        page.overrides = {};
+      }
+      
+      if (!page.guides) {
+        console.warn(`Page ${page.id} missing guides, initializing empty arrays`);
+        page.guides = { horizontal: [], vertical: [] };
+      }
+    });
+    
+    // Ensure masterPages exists
+    if (!doc.masterPages) {
+      console.warn("Document missing masterPages array, creating empty array");
+      doc.masterPages = [];
+    }
+    
+    // Ensure metadata exists
+    if (!doc.metadata) {
+      console.warn("Document missing metadata, creating default metadata");
+      doc.metadata = {
+        pageSize: { width: 210, height: 297 },
+        margins: { top: 20, right: 20, bottom: 20, left: 20 },
+        columns: 1,
+        columnGap: 10,
+        grid: {
+          enabled: false,
+          size: 10,
+          color: '#CCCCCC',
+          opacity: 0.5,
+          snap: false,
+          snapThreshold: 5,
+          subdivisions: 2
+        },
+        rulers: {
+          enabled: true,
+          horizontalVisible: true,
+          verticalVisible: true,
+          units: 'mm',
+          color: '#666666',
+          showNumbers: true
+        }
+      };
+    }
+    
+    // Add created and lastModified dates if missing
+    if (!doc.created || !isValidDate(doc.created)) {
+      console.warn("Document has invalid created date, setting to current date");
+      doc.created = new Date();
+    }
+    
+    if (!doc.lastModified || !isValidDate(doc.lastModified)) {
+      console.warn("Document has invalid lastModified date, setting to current date");
+      doc.lastModified = new Date();
+    }
+    
+    console.log("Document structure validation complete");
+  }
+  
+  /**
+   * Check if a date is valid
+   * @param {Date|string} date - Date to check
+   * @returns {boolean} Whether the date is valid
+   */
+  function isValidDate(date) {
+    if (date instanceof Date) {
+      return !isNaN(date.getTime());
+    }
+    
+    if (typeof date === 'string') {
+      const parsed = new Date(date);
+      return !isNaN(parsed.getTime());
+    }
+    
+    return false;
   }
   
   /**
@@ -458,6 +652,14 @@ export function createDocumentManager(context) {
     
     console.log("Force saving document and canvas state");
     
+    // Check if Canvas is ready for operations
+    const isCanvasReady = canvasComponent && canvasComponent.isCanvasReadyForAutoOps ?
+      canvasComponent.isCanvasReadyForAutoOps() : true;
+      
+    if (!isCanvasReady) {
+      console.warn("Force Save: Canvas is not ready for operations, proceeding with caution");
+    }
+    
     // Get current objects on canvas for logging
     let objectsCount = 0;
     let canvas = null;
@@ -473,36 +675,104 @@ export function createDocumentManager(context) {
       }
     }
     
-    // Always save current page first
-    if (canvasComponent && canvasComponent.saveCurrentPage) {
+    // Always save current page first if canvas is ready
+    if (canvasComponent && canvasComponent.saveCurrentPage && isCanvasReady) {
       console.log("Force Save: Saving current page to document");
       canvasComponent.saveCurrentPage();
     }
     
-    // Synchronize with stored page references to ensure we don't lose any pages
-    // when saving through components that might have lost context
-    if (window.$document && window.$document.pages) {
-      // Check if we need to synchronize pages
-      if (doc.pages.length < window.$document.pages.length) {
-        console.log(`Force Save: Synchronizing pages - document has ${doc.pages.length} pages but window.$document has ${window.$document.pages.length} pages`);
+    // ENHANCED PAGE SYNCHRONIZATION
+    // Synchronize with all possible page references to ensure we don't lose any pages
+    let syncChanges = false;
+    const docPageIds = new Set(doc.pages.map(p => p.id));
+    
+    // First check window.$document for pages
+    if (window.$document && window.$document.pages && Array.isArray(window.$document.pages)) {
+      window.$document.pages.forEach(page => {
+        if (!docPageIds.has(page.id)) {
+          console.log(`Force Save: Adding missing page ${page.id} from window.$document`);
+          doc.pages.push(JSON.parse(JSON.stringify(page))); // Deep clone
+          syncChanges = true;
+        }
+      });
+    }
+    
+    // Also check global context if available
+    if (window.$globalContext && window.$globalContext.currentDocument && 
+        window.$globalContext.currentDocument.pages && 
+        Array.isArray(window.$globalContext.currentDocument.pages)) {
+      
+      window.$globalContext.currentDocument.pages.forEach(page => {
+        if (!docPageIds.has(page.id)) {
+          console.log(`Force Save: Adding missing page ${page.id} from global context`);
+          doc.pages.push(JSON.parse(JSON.stringify(page))); // Deep clone
+          syncChanges = true;
+        }
+      });
+    }
+    
+    // If we have a canvasComponent reference, check its context too
+    if (canvasComponent && canvasComponent.getContext) {
+      const canvasContext = canvasComponent.getContext();
+      if (canvasContext && canvasContext.currentDocument && 
+          canvasContext.currentDocument.pages && 
+          Array.isArray(canvasContext.currentDocument.pages)) {
         
-        // Create a map of existing page IDs
-        const existingPageIds = new Set(doc.pages.map(p => p.id));
-        
-        // Add missing pages from window.$document
-        window.$document.pages.forEach(page => {
-          if (!existingPageIds.has(page.id)) {
-            console.log(`Force Save: Adding missing page ${page.id} from window.$document`);
-            doc.pages.push(page);
+        canvasContext.currentDocument.pages.forEach(page => {
+          if (!docPageIds.has(page.id)) {
+            console.log(`Force Save: Adding missing page ${page.id} from canvas context`);
+            doc.pages.push(JSON.parse(JSON.stringify(page))); // Deep clone
+            syncChanges = true;
           }
         });
-        
-        // Update the document store
-        updateDocument({
-          ...doc,
-          lastModified: new Date()
-        });
       }
+    }
+    
+    // Cross-check page content to ensure we have the most complete information
+    doc.pages.forEach((page, pageIndex) => {
+      // Check if there's data for this page in window.$document
+      if (window.$document && window.$document.pages) {
+        const windowPage = window.$document.pages.find(p => p.id === page.id);
+        
+        // If window version has page content but our version doesn't, use the window version
+        if (windowPage && windowPage.canvasJSON && 
+            (!page.canvasJSON || page.canvasJSON.length < windowPage.canvasJSON.length)) {
+          console.log(`Force Save: Using richer canvasJSON from window.$document for page ${page.id}`);
+          doc.pages[pageIndex].canvasJSON = windowPage.canvasJSON;
+          syncChanges = true;
+        }
+      }
+      
+      // Initialize overrides if missing
+      if (!page.overrides) {
+        doc.pages[pageIndex].overrides = {};
+        syncChanges = true;
+      }
+      
+      // Initialize guides if missing
+      if (!page.guides) {
+        doc.pages[pageIndex].guides = {
+          horizontal: [],
+          vertical: []
+        };
+        syncChanges = true;
+      }
+    });
+    
+    // Sort pages by their ID's numeric part to ensure consistent order
+    doc.pages.sort((a, b) => {
+      const aNum = parseInt(a.id.replace('page-', ''));
+      const bNum = parseInt(b.id.replace('page-', ''));
+      return aNum - bNum;
+    });
+    
+    // If we made changes to the document structure, update it in the store
+    if (syncChanges) {
+      console.log("Force Save: Synchronizing document in store with merged pages");
+      updateDocument({
+        ...doc,
+        lastModified: new Date()
+      });
     }
     
     // Important - save the current document state into a local variable to prevent
@@ -524,6 +794,9 @@ export function createDocumentManager(context) {
       
       // Check pages data for all pages
       if (verifyDoc.pages && verifyDoc.pages.length > 0) {
+        // First update the window.$document reference with the verified document
+        window.$document = verifyDoc;
+        
         verifyDoc.pages.forEach((page, pageIndex) => {
           if (page.canvasJSON) {
             try {
@@ -544,7 +817,7 @@ export function createDocumentManager(context) {
                   console.warn(`Force Save: Object count mismatch - canvas has ${objectsCount} but saved JSON has ${jsonObjectCount}`);
                   
                   // Handle the mismatch by forcing reload if canvas is empty but JSON has objects
-                  if (objectsCount === 0 && jsonObjectCount > 0) {
+                  if (objectsCount === 0 && jsonObjectCount > 0 && isCanvasReady) {
                     console.log("Force Save: Canvas is empty but JSON has objects, forcing reload");
                     
                     // Use the recovery function from the Canvas component
@@ -574,6 +847,13 @@ export function createDocumentManager(context) {
         });
         
         console.log(`Force Save: Document has ${verifyDoc.pages.length} pages, ${pagesWithObjects} pages with objects, ${totalObjectsInDB} total objects`);
+      }
+      
+      // Always ensure the global references are up to date
+      window.$document = verifyDoc;
+      window.$page = get(currentPage);
+      if (canvasComponent) {
+        window.$canvas = canvasComponent.getCanvas();
       }
       
       return true;

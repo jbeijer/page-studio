@@ -46,6 +46,18 @@ export function createDocumentManagement(context) {
       return false;
     }
     
+    if (!doc || !doc.pages) {
+      console.error("Document or document.pages is null in saveCurrentPage");
+      
+      // Try to get document from global window object as a backup
+      if (window.$document && window.$document.pages && Array.isArray(window.$document.pages)) {
+        console.log("Using window.$document as fallback", window.$document.id);
+        doc = window.$document;
+      } else {
+        return false;
+      }
+    }
+    
     if (!pageId) {
       // Try to get the page ID from any source we can
       if (canvas.pageId) {
@@ -166,21 +178,49 @@ export function createDocumentManagement(context) {
           "background": "white"
         });
         
-        // Update document with empty canvas
-        const updatedPages = [...currentDocument.pages];
+        // Update document with empty canvas - SAFELY check for existence
+        if (!doc || !doc.pages) {
+          console.error("Document still null in empty page save path - critical error");
+          return false;
+        }
+        
+        const updatedPages = [...doc.pages];
+        
+        // Safely access page data with validation
+        const currentPageData = updatedPages[pageIndexToSave] || {};
         updatedPages[pageIndexToSave] = {
-          ...updatedPages[pageIndexToSave],
+          id: pageId, // Ensure ID always exists 
           canvasJSON: emptyCanvasJSON,
-          masterPageId: updatedPages[pageIndexToSave].masterPageId,
-          overrides: updatedPages[pageIndexToSave].overrides || {}
+          masterPageId: currentPageData.masterPageId || null,
+          overrides: currentPageData.overrides || {},
+          guides: currentPageData.guides || { horizontal: [], vertical: [] }
         };
         
-        // Update the store
-        context.currentDocument.update(doc => ({
-          ...doc,
-          pages: updatedPages,
-          lastModified: new Date()
-        }));
+        // Update the store, checking if it exists first
+        try {
+          if (context.currentDocument && typeof context.currentDocument.update === 'function') {
+            context.currentDocument.update(currentDoc => ({
+              ...currentDoc,
+              pages: updatedPages,
+              lastModified: new Date()
+            }));
+          } else {
+            // If store update fails, update window.$document as fallback
+            if (window.$document) {
+              window.$document.pages = updatedPages;
+              window.$document.lastModified = new Date();
+              console.log("Updated window.$document as fallback");
+            }
+          }
+        } catch (error) {
+          console.error("Error updating document store:", error);
+          // As a last resort, update window.$document
+          if (window.$document) {
+            window.$document.pages = updatedPages;
+            window.$document.lastModified = new Date();
+            console.log("Updated window.$document after store update failure");
+          }
+        }
         
         console.log(`Empty page ${currentPage} saved successfully`);
         return true;
@@ -1424,11 +1464,22 @@ export function createDocumentManagement(context) {
           
           updatedPages[pageIndex].overrides[masterObject.masterObjectId] = true;
           
-          context.currentDocument.update(doc => ({
-            ...doc,
-            pages: updatedPages,
-            lastModified: new Date()
-          }));
+          // Safely update with fallbacks
+          try {
+            if (context.currentDocument && typeof context.currentDocument.update === 'function') {
+              context.currentDocument.update(doc => ({
+                ...doc,
+                pages: updatedPages,
+                lastModified: new Date()
+              }));
+            } else if (window.$document) {
+              window.$document.pages = updatedPages;
+              window.$document.lastModified = new Date();
+              console.log("Updated window.$document during master object override");
+            }
+          } catch (error) {
+            console.error("Error updating document for master object override:", error);
+          }
         }
       }
       

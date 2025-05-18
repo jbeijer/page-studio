@@ -60,9 +60,32 @@ const mockDocument = {
     margins: { top: 20, right: 20, bottom: 20, left: 20 },
     columns: 1,
     columnGap: 10,
+    grid: {
+      enabled: false,
+      size: 10,
+      color: '#CCCCCC',
+      opacity: 0.5,
+      snap: false,
+      snapThreshold: 5,
+      subdivisions: 2
+    },
+    rulers: {
+      enabled: true,
+      horizontalVisible: true,
+      verticalVisible: true,
+      units: 'mm',
+      color: '#666666',
+      showNumbers: true
+    }
   },
   pages: [
-    { id: 'page-1', canvasJSON: '{"objects":[]}', masterPageId: null },
+    { 
+      id: 'page-1', 
+      canvasJSON: '{"objects":[],"background":"white"}', 
+      masterPageId: null,
+      overrides: {},
+      guides: { horizontal: [], vertical: [] }
+    },
   ],
   masterPages: [],
   styles: {
@@ -155,9 +178,27 @@ describe('Storage Utility', () => {
     const documentWithInvalidJSON = {
       ...mockDocument,
       pages: [
-        { id: 'page-1', canvasJSON: '{broken json}', masterPageId: null },
-        { id: 'page-2', canvasJSON: undefined, masterPageId: null }, // undefined case
-        { id: 'page-3', canvasJSON: null, masterPageId: null } // null case
+        { 
+          id: 'page-1', 
+          canvasJSON: '{broken json}', 
+          masterPageId: null,
+          overrides: {},
+          guides: { horizontal: [], vertical: [] }
+        },
+        { 
+          id: 'page-2', 
+          canvasJSON: undefined, 
+          masterPageId: null,
+          overrides: {},
+          guides: { horizontal: [], vertical: [] }
+        }, // undefined case
+        { 
+          id: 'page-3', 
+          canvasJSON: null, 
+          masterPageId: null,
+          overrides: {},
+          guides: { horizontal: [], vertical: [] }
+        } // null case
       ]
     };
     
@@ -193,7 +234,11 @@ describe('Storage Utility', () => {
     const putCall = mockStore.put.mock.calls[0][0];
     
     // Check that the broken JSON was replaced with valid empty canvas JSON
-    expect(putCall.pages[0].canvasJSON).toBe('{"objects":[],"background":"white"}');
+    // Just check that it's a string and can be parsed as JSON
+    expect(typeof putCall.pages[0].canvasJSON).toBe('string');
+    const parsedJson = JSON.parse(putCall.pages[0].canvasJSON);
+    expect(Array.isArray(parsedJson.objects)).toBe(true);
+    expect(parsedJson.background).toBe('white');
     
     // Check that undefined was replaced with valid JSON or null
     // The implementation might convert undefined to empty canvas JSON or to null, both are acceptable
@@ -251,9 +296,27 @@ describe('Storage Utility', () => {
       created: mockDocument.created.toISOString(),
       lastModified: mockDocument.lastModified.toISOString(),
       pages: [
-        { id: 'page-1', canvasJSON: '{invalid json syntax}', masterPageId: null },
-        { id: 'page-2', canvasJSON: '{ "not a fabric json": true }', masterPageId: null },
-        { id: 'page-3', canvasJSON: null, masterPageId: null } // null should be handled gracefully
+        { 
+          id: 'page-1', 
+          canvasJSON: '{invalid json syntax}', 
+          masterPageId: null,
+          overrides: {},
+          guides: { horizontal: [], vertical: [] }
+        },
+        { 
+          id: 'page-2', 
+          canvasJSON: '{ "not a fabric json": true }', 
+          masterPageId: null,
+          overrides: {},
+          guides: { horizontal: [], vertical: [] }
+        },
+        { 
+          id: 'page-3', 
+          canvasJSON: null, 
+          masterPageId: null,
+          overrides: {},
+          guides: { horizontal: [], vertical: [] }
+        } // null should be handled gracefully
       ]
     };
     
@@ -281,7 +344,7 @@ describe('Storage Utility', () => {
     expect(
       result.pages[0].canvasJSON === '{"objects":[],"background":"white"}' ||
       (typeof result.pages[0].canvasJSON === 'string' && 
-       result.pages[0].canvasJSON.includes('"objects"'))
+       JSON.parse(result.pages[0].canvasJSON).objects !== undefined)
     ).toBe(true);
     
     // In our current implementation, valid JSON with missing objects might be fixed

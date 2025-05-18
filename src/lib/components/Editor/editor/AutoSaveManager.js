@@ -1,4 +1,5 @@
 import { currentDocument } from '$lib/stores/document';
+import { canvasReady } from '$lib/stores/canvasReady.js';
 import { get } from 'svelte/store';
 
 /**
@@ -38,7 +39,11 @@ export function createAutoSaveManager(context, options = {}) {
         try {
           const canvasComponent = getCanvasComponent();
           if (canvasComponent && canvasComponent.saveCurrentPage) {
-            canvasComponent.saveCurrentPage();
+            if (get(canvasReady)) {
+              canvasComponent.saveCurrentPage();
+            } else {
+              console.warn("AutoSaveManager: Canvas inte redo för autosave, skippar saveCurrentPage");
+            }
           }
           
           const documentManager = getDocumentManager();
@@ -78,7 +83,11 @@ export function createAutoSaveManager(context, options = {}) {
       
       const canvasComponent = getCanvasComponent();
       if (canvasComponent && canvasComponent.saveCurrentPage) {
-        canvasComponent.saveCurrentPage();
+        if (get(canvasReady)) {
+          canvasComponent.saveCurrentPage();
+        } else {
+          console.warn("AutoSaveManager: Canvas inte redo för autosave (beforeunload), skippar saveCurrentPage");
+        }
       }
       
       // We don't await this to avoid blocking the page close,
@@ -147,8 +156,12 @@ export function createAutoSaveManager(context, options = {}) {
     // Final save when component unmounts
     const canvasComponent = getCanvasComponent();
     if (canvasComponent && canvasComponent.saveCurrentPage) {
-      console.log("Component unmounting, saving current page");
-      canvasComponent.saveCurrentPage();
+      if (get(canvasReady)) {
+        console.log("Component unmounting, saving current page");
+        canvasComponent.saveCurrentPage();
+      } else {
+        console.warn("AutoSaveManager: Canvas inte redo för autosave (unmount), skippar saveCurrentPage");
+      }
     }
     
     // Force a final document save
