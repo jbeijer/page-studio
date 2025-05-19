@@ -9,23 +9,30 @@ Detta dokument beskriver den tekniska arkitekturen för den webbaserade InDesign
 - **SvelteKit**: Valt för sin höga prestanda, små bundles och enkla komponentmodell
   - Fördelar: Minimalt ramverk-overhead, reaktiv programmering, filbaserad routing
   - Svelte-stores används för global state management
+  - Svelte-kontext används för service injection
 
-### 1.2. UI och Styling
+### 1.2. Arkitektur
+- **Service-baserad arkitektur**: Centraliserad logik och funktionalitet
+  - Singleton-pattern för konsekvent åtkomst till tjänster
+  - Dependency injection via Svelte Context
+  - Se [service-based-architecture.md](./service-based-architecture.md) för detaljerad beskrivning
+
+### 1.3. UI och Styling
 - **TailwindCSS**: För snabb och konsekvent styling
   - Fördelar: Utility-first approach, bra för UI-komponenter, lätt att anpassa
 
-### 1.3. Canvas och Renderingsbibliotek
+### 1.4. Canvas och Renderingsbibliotek
 - **Fabric.js**: Kraftfullt canvas-bibliotek för objekthantering
   - Fördelar: Inbyggt stöd för objektmanipulation, gruppering, serialisering
   - Hantering av selection, transformations, layers
   - Anpassningsbart för specifika redigeringsverktyg
 
-### 1.4. PDF-generering
+### 1.5. PDF-generering
 - **jsPDF**: För klientbaserad PDF-generering i fas 1 (MVP)
 - **Puppeteer**: För server-side rendering i fas 3 (Avancerad Output)
   - Möjliggör vektorbaserad PDF med korrekt textrendering
 
-### 1.5. Lagring
+### 1.6. Lagring
 - **IndexedDB**: För lokal lagring av dokument och mallar
   - Fördelar: Stora datamängder kan lagras lokalt, strukturerad lagring
 
@@ -173,6 +180,7 @@ interface ShapeObject extends CanvasObject {
 ### 3.1. Huvudkomponenter
 ```
 App
+├── ServiceProvider (Context Provider)
 ├── EditorLayout
 │   ├── ToolbarPanel
 │   │   ├── ToolSelector
@@ -198,7 +206,23 @@ App
     └── SettingsDialog
 ```
 
-### 3.2. State Management
+### 3.2. Service-lager
+```
+Services (Singleton pattern)
+├── DocumentService
+├── CanvasService
+├── MasterPageService
+├── LayerService
+├── ObjectService
+├── ToolService
+├── TextFlowService
+├── GridService
+├── GuideService
+├── HistoryService
+└── ContextService
+```
+
+### 3.3. State Management
 Svelte-stores används för att hantera global state:
 
 ```typescript
@@ -221,7 +245,7 @@ export const canRedo = writable<boolean>(false);
 export const templateLibrary = writable<Template[]>([]);
 ```
 
-### 3.3. Historik- och Ångra/Göra Om-hantering
+### 3.4. Historik- och Ångra/Göra Om-hantering
 
 För att hantera historik och ångra/göra om-funktionalitet används en HistoryManager-klass:
 
@@ -253,6 +277,37 @@ HistoryManager integreras med Canvas-komponenten för att spara tillstånd autom
 - Begränsar stackstorleken för att kontrollera minnesanvändning
 - Koordinerar med dokumentlagring för att säkerställa att ändringarna bevaras
 
+### 3.5. Service Dependency Management
+
+När services behöver interagera med varandra används följande strategier:
+
+```typescript
+// 1. Dependency Injection vid initialisering
+class DocumentService {
+  initialize(options) {
+    this.canvas = options.canvas;
+    this.contextService = options.contextService;
+    this.objectService = options.objectService;
+  }
+}
+
+// 2. Service Provider Context
+import { getServices } from '$lib/services/getServices';
+
+function MyComponent() {
+  const { documentService, canvasService } = getServices();
+  // Använd services...
+}
+
+// 3. Kontext-baserad kommunikation
+class ToolService {
+  setupCanvasForTool(toolType) {
+    // Uppdatera kontextvärden
+    contextService.set('activeTool', toolType);
+  }
+}
+```
+
 ## 4. Nyckelprocesser
 
 ### 4.1. Textflöde mellan rutor
@@ -271,6 +326,7 @@ HistoryManager integreras med Canvas-komponenten för att spara tillstånd autom
    - Event-lyssnare på textredigeringshändelser
    - Detektion av överskjutande text
    - Font-rendering med korrekt radbrytning
+   - TextFlowService centraliserar all textflödeslogik
 
 ### 4.2. PDF-generering
 
@@ -297,19 +353,25 @@ HistoryManager integreras med Canvas-komponenten för att spara tillstånd autom
      overridable: boolean     // Om objektet kan överridas på specifika sidor
    }
    ```
-3. Vid sidladdning:
+3. MasterPageService hanterar all mallsidelogik:
+   - Skapande, uppdatering och borttagning av mallsidor
+   - Applicering av mallsidor på dokumentsidor
+   - Överriding av mallsideobjekt
+   - Spårning av överridningar
+
+4. Vid sidladdning:
    - Canvas rensas
    - Dokumentsidans specifika innehåll laddas
-   - Mallsideobjekt appliceras, med hänsyn till overrides
+   - MasterPageService applicerar mallsideobjekt med hänsyn till overrides
    - Allt renderas i korrekt ordning
 
-4. Mallsideobjekt har speciella visuella indikationer och interaktionsmodell:
+5. Mallsideobjekt har speciella visuella indikationer och interaktionsmodell:
    - Visas med annan opacitet eller visuell stil för att indikera att de är mallsideobjekt
    - Normalt låsta för redigering
    - Kan överridas via kontextmeny (högerklick) eller dubbelklick
    - Överridda objekt blir normala sidobjekt och markeras i sidans overrides-tabell
 
-5. Överridehantering:
+6. Överridehantering:
    ```typescript
    interface Page {
      // ...andra egenskaper
@@ -319,11 +381,11 @@ HistoryManager integreras med Canvas-komponenten för att spara tillstånd autom
      };
    }
    ```
-   - Vid överriding klonas mallsideobjektet och läggs till på sidan
+   - Vid överriding klonas mallsideobjektet och läggs till på sidan (hanteras av MasterPageService)
    - Originalobjektet från mallsidan visas inte
    - Det överridda objektet är helt redigerbart
 
-6. Mallsidepanel (MasterPagePanel):
+7. Mallsidepanel (MasterPagePanel):
    - Visar lista över tillgängliga mallsidor med miniatyrer
    - Gränssnitt för att skapa, redigera och ta bort mallsidor
    - Knappar för att applicera mallsidor på aktuell sida eller alla sidor
@@ -338,6 +400,7 @@ HistoryManager integreras med Canvas-komponenten för att spara tillstånd autom
 - Mätning av texthöjd med canvas text-metrics
 - Inkrementell beräkning av textpassning
 - Observer-pattern för att uppdatera länkade textrutor
+- TextFlowService centraliserar beräkningar och uppdateringar
 - Optimera för prestanda genom att bara beräkna om när nödvändigt
 
 ### 5.2. Vector-baserad PDF-export
@@ -362,12 +425,13 @@ HistoryManager integreras med Canvas-komponenten för att spara tillstånd autom
 **Utmaning**: Implementera en robust ångra/göra om-funktionalitet som hanterar alla typer av ändringar.
 
 **Lösning**:
-- Historikhantering med HistoryManager-klass som spårar alla canvas-states
+- Historikhantering med HistoryService som spårar alla canvas-states
 - Serialisering av canvas-tillstånd med alla specialattribut (inklusive textflöde och mallsideobjekt)
 - Optimerad minnesanvändning genom att begränsa historikstackens storlek
 - Integration med kortkommandon (Ctrl+Z, Ctrl+Y) för smidig användarupplevelse
 - Strategier för att hantera interaktion mellan ångra/göra om och olika objekt (speciellt mallsideobjekt)
 - Kontextkänsliga knappar i UI som speglar möjligheten att ångra/göra om
+- Tydlig service-API med undo(), redo(), canUndo() och canRedo() metoder
 
 ## 6. Säkerhet och datahantering
 
@@ -402,3 +466,11 @@ HistoryManager integreras med Canvas-komponenten för att spara tillstånd autom
 - Plugin-API för att utöka funktionalitet
 - Hook-system för att integrera med externa tjänster
 - Template-marknadsplats för delning av mallar
+
+### 7.4. Service-arkitekturens vidareutveckling
+- Implementera formell Dependency Injection-container
+- Service discovery och lazy initialization
+- Förbättrad felhantering och återhämtning i services
+- Standardiserad loggning och övervakning av services
+- Mer granulär service-structure med microservices-approach
+- Implementera service-versioning för bakåtkompatibilitet

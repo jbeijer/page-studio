@@ -23,6 +23,7 @@ och projektet följer [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Created TextFlowService to handle text flow between linked textboxes
 - Updated Toolbar.svelte and DrawingTools.svelte to use services instead of direct canvas manipulation
 - Added comprehensive test coverage for all services including MasterPageService, ServiceProvider, and ServiceIntegration
+- Updated architectural documentation with detailed description of service-based architecture
 
 ### Fixed
 - Temporary downgrade from Svelte 5 to Svelte 4 for compatibility
