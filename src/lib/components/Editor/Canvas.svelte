@@ -4,30 +4,41 @@
   import { activeTool, ToolType, currentToolOptions } from '$lib/stores/toolbar';
   import { clipboard } from '$lib/stores/editor';
   import { fabric } from 'fabric';
+  
+  // Make fabric available globally for other modules
+  if (typeof window !== 'undefined') {
+    window.fabric = fabric;
+    console.log("Fabric.js version loaded:", fabric.version || "unknown");
+    console.log("Made fabric available globally via window.fabric");
+  }
   import TextFlow from '$lib/utils/text-flow';
-  import HistoryManager from '$lib/utils/history-manager';
-  import { createCanvas, detectFabricVersion } from '$lib/utils/fabric-helpers';
+  import { createCanvas, getFabricVersion, createTextObject, createShadow } from '$lib/utils/fabric-helpers';
   import MasterObjectContextMenu from './MasterObjectContextMenu.svelte';
   import HorizontalRuler from './HorizontalRuler.svelte';
   import VerticalRuler from './VerticalRuler.svelte';
-  import { 
-    createHorizontalGuide, 
-    createVerticalGuide, 
-    makeGuideDraggable,
-    deleteGuide,
-    loadGuides
-  } from './Canvas.guides.js';
+  // Import guides service
+import guideService from '$lib/services/GuideService.js';
   import { loadDocument, saveDocument } from '$lib/utils/storage.js';
   import { pageRecovery } from '$lib/utils/page-recovery.js';
   
+  // Import services
+  import documentService from '$lib/services/DocumentService';
+  import canvasService from '$lib/services/CanvasService';
+  import masterPageService from '$lib/services/MasterPageService';
+  import contextService from '$lib/services/ContextService';
+  import layerService from '$lib/services/LayerService';
+  import objectService from '$lib/services/ObjectService';
+  import documentModuleService from '$lib/services/DocumentModuleService';
+  import historyService from '$lib/services/HistoryService';
+  import toolService from '$lib/services/ToolService';
+  import textFlowService from '$lib/services/TextFlowService';
+  import ServiceProvider from '$lib/services/ServiceProvider.svelte';
+  import getServices from '$lib/services/getServices';
+  
   // Import modular components
   import { 
-    createCanvasContext,
     createEventHandlers,
-    createLayerManagement,
-    createObjectManipulation,
     createDocumentManagement,
-    createGuideManagement,
     createGridManagement
   } from './modules/Canvas.index.js';
 
@@ -60,17 +71,11 @@
   
   // Module functions that will be initialized
   let eventHandlers;
-  let layerManagement;
-  let objectManipulation;
-  let documentManagement;
-  let guideManagement;
   let gridManagement;
   
   // State variables
   let isMounted = false;
   let selectedObject = null;
-  let textFlow;
-  let historyManager;
   let canUndo = false;
   let canRedo = false;
   
@@ -88,6 +93,9 @@
   // Keep track of the previous page to avoid redundant operations
   let previousPage = null;
   
+  // Track document IDs to detect document switches
+  let previousDocumentId = null;
+  
   // Show/hide rulers based on document settings
   $: showRulers = $currentDocument?.metadata?.rulers?.enabled || false;
   $: showHorizontalRuler = showRulers && ($currentDocument?.metadata?.rulers?.horizontalVisible || true);
@@ -99,9 +107,46 @@
   $: rulerOffset = 20; // Width/height of the rulers
   
   // Watch for grid changes
-  $: if (canvas && $currentDocument?.metadata?.grid && gridManagement) {
-    // Use our grid module's renderGrid function
-    gridManagement.renderGrid();
+  $: if (canvas && $currentDocument?.metadata?.grid) {
+    // Use our GridService to render the grid
+    import('$lib/services/GridService').then(module => {
+      const gridService = module.default;
+      gridService.initialize({
+        canvas,
+        canvasElement,
+        width,
+        height
+      });
+      gridService.renderGrid();
+    });
+    
+    // Initialize GuideService if it hasn't been initialized yet
+    if (!guideService.initialized) {
+      console.log("Initializing GuideService from grid change watcher");
+      guideService.initialize({
+        canvas,
+        width,
+        height
+      });
+      
+      // Load guides for current page
+      if ($currentPage) {
+        guideService.loadGuidesFromDocument();
+      }
+    }
+  }
+  
+  // Watch for changes to the canvas when page changes, and ensure page is saved
+  $: if (canvas && $currentPage && documentModuleService.initialized) {
+    // Use a debounced approach to not trigger this too often
+    clearTimeout(window._pageSaveTimeout);
+    window._pageSaveTimeout = setTimeout(() => {
+      const objects = canvas?.getObjects() || [];
+      if (objects.length > 0) {
+        console.log(`Auto-saving page ${$currentPage} with ${objects.length} objects to ensure persistence`);
+        documentModuleService.saveCurrentPage();
+      }
+    }, 500);
   }
   
   // Generate a unique ID for objects when needed
@@ -111,74 +156,49 @@
 
   // Handle active tool changes
   $: if (canvas && $activeTool) {
-    setupCanvasForTool($activeTool);
+    // Update the context with the new active tool value to ensure event handlers use it
+    if (window.$globalContext) {
+      window.$globalContext.activeTool = $activeTool;
+    }
     
-    // After changing tools, ensure all objects are properly rendered
-    setTimeout(() => {
-      canvas.requestRenderAll();
-      canvas.renderAll();
-    }, 0);
+    // Use toolService to setup canvas for this tool
+    if (toolService.initialized) {
+      toolService.setupCanvasForTool($activeTool);
+    } else if (canvas) {
+      // If toolService isn't initialized but canvas is available, initialize it
+      toolService.initialize({ canvas });
+      toolService.setupCanvasForTool($activeTool);
+    }
+    
+    console.log(`Active tool updated to: ${$activeTool}`);
   }
   
-  // Setup canvas for a specific tool
+  // Provide setupCanvasForTool as a proxy to toolService for backward compatibility
   function setupCanvasForTool(toolType) {
     if (!canvas) return;
     
-    // Reset canvas drawing mode
-    canvas.isDrawingMode = false;
-    
-    // Enable/disable selection based on tool
-    canvas.selection = toolType === ToolType.SELECT;
-    
-    // Make objects selectable only with the select tool, but keep them visible and responsive
-    const canvasObjects = canvas.getObjects();
-    canvasObjects.forEach(obj => {
-      // Master page objects have special handling
-      if (obj.fromMaster) {
-        obj.selectable = false; // Master objects are never directly selectable
-        obj.evented = true; // But they can receive events for context menu
-      } else {
-        obj.selectable = toolType === ToolType.SELECT;
-        obj.evented = true; // Keep evented true to ensure objects remain visible and can receive events
-        // Only enable selection for the SELECT tool
-        if (toolType !== ToolType.SELECT) {
-          obj.hoverCursor = 'default'; // Change cursor for non-selectable objects
-        } else {
-          obj.hoverCursor = 'move'; // Default cursor for selectable objects
-        }
-      }
-    });
-    
-    // Reset the cursor
-    canvas.defaultCursor = 'default';
-    
-    // Tool-specific setup
-    switch (toolType) {
-      case ToolType.TEXT:
-        canvas.defaultCursor = 'text';
-        break;
-      case ToolType.IMAGE:
-        canvas.defaultCursor = 'crosshair';
-        break;
-      case ToolType.RECTANGLE:
-      case ToolType.ELLIPSE:
-      case ToolType.LINE:
-        canvas.defaultCursor = 'crosshair';
-        break;
+    // If toolService is initialized, use it
+    if (toolService.initialized) {
+      return toolService.setupCanvasForTool(toolType);
+    } else {
+      // Otherwise, initialize it and then use it
+      toolService.initialize({ canvas });
+      return toolService.setupCanvasForTool(toolType);
     }
-    
-    // Ensure full re-render of the canvas with all objects
-    canvas.requestRenderAll();
-    canvas.renderAll();
+  }
+  
+  // Make setupCanvasForTool available externally through the canvas
+  if (canvas) {
+    canvas.setupForTool = setupCanvasForTool;
   }
 
   // Update text flow when text content changes
   function updateTextFlow(textObject) {
-    if (!textObject || !textFlow) return;
+    if (!textObject || !textFlowService || !textFlowService.initialized) return;
     
     // If the textbox has linked objects, update the text flow
     if (textObject.linkedObjectIds && textObject.linkedObjectIds.length > 0) {
-      textFlow.updateTextFlow(textObject.id);
+      textFlowService.updateTextFlow(textObject.id);
       canvas.renderAll();
     }
   }
@@ -189,7 +209,7 @@
   function handleContextMenuOverride(event) {
     const { object } = event.detail;
     if (object && object.fromMaster && object.overridable) {
-      documentManagement.overrideMasterObject(object);
+      masterPageService.overrideMasterObject(object);
     }
   }
   
@@ -203,72 +223,39 @@
     }
   }
   
-  // Initialize a shared context for all canvas modules
-  function initializeCanvasContext() {
-    // Create a shared context that all modules can access
-    const context = createCanvasContext({
-      // Canvas references
-      canvas,
-      canvasElement,
-      canvasContainer,
-      imageInput,
-      
-      // Svelte stores
-      currentDocument: $currentDocument,
-      currentPage: $currentPage,
-      activeTool: $activeTool,
-      currentToolOptions: $currentToolOptions,
-      clipboard,
-      
-      // State variables
-      width,
-      height,
-      selectedObject,
-      isMounted,
-      showContextMenu,
-      contextMenuX,
-      contextMenuY,
-      contextMenuObject,
-      canvasScrollX,
-      canvasScrollY,
-      zoomLevel,
-      textFlow,
-      isReadyForAutoOps,
-      
-      // Utility functions
-      dispatch,
-      generateId,
-      convertToPixels,
-      snapToGridPoint,
-      updateTextFlow,
-      setupCanvasForTool,
-      loadDocument,
-      
-      // Guide functions
-      refreshGuides: loadGuides.bind(null, canvas, $currentDocument, $currentPage),
-      
-      // Add version information
-      version: {
-        appVersion: "1.0.0", // Update with your actual version
-        fabricVersion: fabric.version || '5.3.0',
-        lastUpdated: new Date().toISOString()
-      }
-    });
+  /**
+   * Updates the context with references to all services and useful methods
+   * This function is called after services are initialized to ensure
+   * the context has all the required references and methods
+   */
+  function updateContextWithServices() {
+    if (!contextService.initialized) {
+      console.error("Cannot update context: ContextService not initialized");
+      return null;
+    }
     
-    // Initialize module handlers
-    eventHandlers = createEventHandlers(context);
-    layerManagement = createLayerManagement(context);
-    objectManipulation = createObjectManipulation(context);
-    documentManagement = createDocumentManagement(context);
-    guideManagement = createGuideManagement(context);
-    gridManagement = createGridManagement(context);
+    // Get a reference to the context
+    const context = contextService.createProxy();
     
-    // Update context with module functions
+    // Before updating, ensure we have event handlers defined
+    if (!eventHandlers) {
+      eventHandlers = createEventHandlers(context);
+    }
+    
+    // Update context with service references and methods
     context.update({
-      // Grid management functions
-      renderGrid: gridManagement.renderGrid,
-      toggleGrid: gridManagement.toggleGrid,
-      updateGridProperties: gridManagement.updateGridProperties,
+      // Service references
+      documentService,
+      canvasService,
+      masterPageService,
+      contextService,
+      layerService,
+      objectService,
+      documentModuleService,
+      historyService,
+      toolService,
+      textFlowService,
+      guideService,
       
       // Event handlers
       handleMouseDown: eventHandlers.handleMouseDown,
@@ -281,43 +268,55 @@
       handleScroll: eventHandlers.handleScroll,
       handleImageUpload: eventHandlers.handleImageUpload,
       
-      // Layer management
-      bringForward: layerManagement.bringForward,
-      sendBackward: layerManagement.sendBackward,
-      bringToFront: layerManagement.bringToFront,
-      sendToBack: layerManagement.sendToBack,
+      // Layer management methods
+      bringForward: layerService.bringForward,
+      sendBackward: layerService.sendBackward,
+      bringToFront: layerService.bringToFront,
+      sendToBack: layerService.sendToBack,
       
-      // Object manipulation
-      deleteSelectedObjects: objectManipulation.deleteSelectedObjects,
-      copySelectedObjects: objectManipulation.copySelectedObjects,
-      cutSelectedObjects: objectManipulation.cutSelectedObjects,
-      pasteObjects: objectManipulation.pasteObjects,
-      rotateObject: objectManipulation.rotateObject,
-      scaleObject: objectManipulation.scaleObject,
-      flipObject: objectManipulation.flipObject,
+      // Object manipulation methods
+      deleteSelectedObjects: objectService.deleteSelectedObjects,
+      copySelectedObjects: objectService.copySelectedObjects,
+      cutSelectedObjects: objectService.cutSelectedObjects,
+      pasteObjects: objectService.pasteObjects,
+      rotateObject: objectService.rotateObject,
+      scaleObject: objectService.scaleObject,
+      flipObject: objectService.flipObject,
       
-      // Document management
-      saveCurrentPage: documentManagement.saveCurrentPage,
-      saveSpecificPage: documentManagement.saveSpecificPage,
-      loadPage: documentManagement.loadPage,
-      loadDocumentFromIndexedDB: documentManagement.loadDocumentFromIndexedDB,
-      createObjectsManually: documentManagement.createObjectsManually,
-      applyMasterPage: documentManagement.applyMasterPage,
-      overrideMasterObject: documentManagement.overrideMasterObject,
-      getPageById: documentManagement.getPageById,
+      // Document management methods
+      saveCurrentPage: documentModuleService.saveCurrentPage,
+      saveSpecificPage: documentModuleService.saveSpecificPage,
+      loadPage: documentModuleService.loadPage,
+      loadDocumentFromIndexedDB: documentModuleService.loadDocumentFromIndexedDB,
+      createObjectsManually: documentModuleService.createObjectsManually,
+      applyMasterPage: documentModuleService.applyMasterPage,
+      overrideMasterObject: documentModuleService.overrideMasterObject,
+      getPageById: documentModuleService.getPageById,
       
-      // Guide management
-      handleCreateGuide: guideManagement.handleCreateGuide,
-      handleUpdateGuide: guideManagement.handleUpdateGuide,
-      handleDeleteGuide: guideManagement.handleDeleteGuide,
-      saveGuidesToDocument: guideManagement.saveGuidesToDocument,
-      loadGuidesFromDocument: guideManagement.loadGuidesFromDocument,
-      clearGuides: guideManagement.clearGuides,
+      // Tool management methods
+      setupCanvasForTool: setupCanvasForTool,
       
-      // Grid management
-      renderGrid: gridManagement.renderGrid,
-      toggleGrid: gridManagement.toggleGrid,
-      updateGridProperties: gridManagement.updateGridProperties
+      // Text flow management methods
+      updateTextFlow: updateTextFlow,
+      
+      // Guide management methods
+      handleCreateGuide,
+      handleUpdateGuide,
+      handleDeleteGuide,
+      refreshGuides: guideService.loadGuidesFromDocument,
+      saveGuidesToDocument: guideService.saveGuidesToDocument,
+      loadGuidesFromDocument: guideService.loadGuidesFromDocument,
+      clearGuides: guideService.clearGuides,
+      
+      // Version information
+      version: {
+        appVersion: "1.0.0", // Update with your actual version
+        fabricVersion: fabric.version || '5.3.0',
+        lastUpdated: new Date().toISOString()
+      },
+      
+      // Current state references
+      isReadyForAutoOps
     });
     
     // Store context in global scope for emergency recovery
@@ -339,8 +338,8 @@
           currentPageId: $currentPage
         }),
         forceSave: () => {
-          if (documentManagement && documentManagement.saveCurrentPage) {
-            return documentManagement.saveCurrentPage();
+          if (documentModuleService && documentModuleService.saveCurrentPage) {
+            return documentModuleService.saveCurrentPage();
           }
           return false;
         }
@@ -353,29 +352,127 @@
   // Export functions to make them available to parent components
   export const getCanvas = () => canvas;
   export const getSelectedObject = () => selectedObject;
-  export const getTextFlow = () => textFlow;
+  export const getTextFlow = () => textFlowService;
   export const getContext = () => window.$globalContext || null;
   
-  // Direct exports of canvas functions
-  export const bringForward = () => layerManagement?.bringForward();
-  export const sendBackward = () => layerManagement?.sendBackward();
-  export const bringToFront = () => layerManagement?.bringToFront();
-  export const sendToBack = () => layerManagement?.sendToBack();
-  export const deleteSelectedObjects = () => objectManipulation?.deleteSelectedObjects();
-  export const copySelectedObjects = () => objectManipulation?.copySelectedObjects();
-  export const cutSelectedObjects = () => objectManipulation?.cutSelectedObjects();
-  export const pasteObjects = () => objectManipulation?.pasteObjects();
-  export const undo = () => historyManager?.canUndo() ? historyManager.undo() : null;
-  export const redo = () => historyManager?.canRedo() ? historyManager.redo() : null;
-  export const overrideMasterObject = (obj) => documentManagement?.overrideMasterObject(obj);
-  export const isObjectFromMaster = (obj) => objectManipulation?.isObjectFromMaster(obj);
-  export const getMasterPageObjects = () => objectManipulation?.getMasterPageObjects();
+  // Add a complete reset function for external components to use
+  export const resetCanvas = () => {
+    if (!canvas) return false;
+    
+    console.log("EXTERNAL RESET: Performing complete canvas reset");
+    try {
+      // Disable all event handlers temporarily
+      canvas.off();
+      
+      // Clear all canvas contents - use a more thorough approach
+      canvas.clear();
+      canvas.backgroundColor = 'white';
+      
+      // Reset internal state completely
+      canvas._objects = [];
+      if (canvas._objectsToRender) canvas._objectsToRender = [];
+      canvas.discardActiveObject();
+      canvas.__eventListeners = {};
+      
+      // Reset additional internal state that might persist
+      if (canvas._activeObject) canvas._activeObject = null;
+      if (canvas._hoveredTarget) canvas._hoveredTarget = null;
+      if (canvas._currentTransform) canvas._currentTransform = null;
+      
+      // Reset all potential state artifacts that could persist
+      if (typeof canvas.selection !== 'undefined') canvas.selection = false;
+      if (typeof canvas.isDrawingMode !== 'undefined') canvas.isDrawingMode = false;
+      
+      // Clear any cached references
+      if (typeof window !== 'undefined') {
+        // Clear global canvas objects cache
+        window._canvasObjects = null;
+        window._previousPageBackup = null;
+        window.$emergencyBackup = null;
+        
+        // Set the current document ID for transition handling
+        if ($currentDocument) {
+          window._previousDocumentId = $currentDocument.id;
+        }
+      }
+      
+      // More aggressive reset for any potential fabric.js global state
+      if (typeof fabric !== 'undefined' && fabric.Canvas) {
+        try {
+          fabric.Canvas.activeInstance = null;
+        } catch (err) {
+          console.warn("Could not reset fabric.Canvas.activeInstance", err);
+        }
+      }
+      
+      // Second reset cycle - clear again to be absolutely sure
+      canvas.clear();
+      canvas.backgroundColor = 'white';
+      if (canvas._objects) canvas._objects = [];
+      if (canvas._objectsToRender) canvas._objectsToRender = [];
+      
+      // Force multiple renders with a clean rendering loop
+      canvas.requestRenderAll();
+      canvas.renderAll();
+      setTimeout(() => {
+        canvas.requestRenderAll();
+        canvas.renderAll();
+      }, 10);
+      
+      // Third reset cycle - just to be totally sure
+      setTimeout(() => {
+        canvas.clear();
+        canvas.backgroundColor = 'white';
+        if (canvas._objects) canvas._objects = [];
+        if (canvas._objectsToRender) canvas._objectsToRender = [];
+        canvas.requestRenderAll();
+        canvas.renderAll();
+      }, 50);
+      
+      // Restore event handlers after a delay
+      setTimeout(() => {
+        if (eventHandlers && typeof eventHandlers.registerEventHandlers === 'function') {
+          eventHandlers.registerEventHandlers();
+        }
+        
+        // Final render after event handlers are registered
+        canvas.requestRenderAll();
+        canvas.renderAll();
+      }, 150);
+      
+      console.log("EXTERNAL RESET: Canvas reset complete");
+      return true;
+    } catch (err) {
+      console.error("EXTERNAL RESET: Error during canvas reset:", err);
+      return false;
+    }
+  };
+  
+  // Make canvas directly accessible via window for emergency situations
+  if (typeof window !== 'undefined') {
+    window.$canvas = canvas;
+  }
+  
+  // Direct exports of canvas functions using services
+  export const bringForward = () => layerService.bringForward();
+  export const sendBackward = () => layerService.sendBackward();
+  export const bringToFront = () => layerService.bringToFront();
+  export const sendToBack = () => layerService.sendToBack();
+  export const deleteSelectedObjects = () => objectService.deleteSelectedObjects();
+  export const copySelectedObjects = () => objectService.copySelectedObjects();
+  export const cutSelectedObjects = () => objectService.cutSelectedObjects();
+  export const pasteObjects = () => objectService.pasteObjects();
+  export const undo = () => historyService.canUndo() ? historyService.undo() : null;
+  export const redo = () => historyService.canRedo() ? historyService.redo() : null;
+  export const overrideMasterObject = (obj) => masterPageService.overrideMasterObject(obj);
+  export const isObjectFromMaster = (obj) => obj && obj.fromMaster === true;
+  export const getMasterPageObjects = () => canvas ? canvas.getObjects().filter(obj => obj.fromMaster) : [];
   export const saveCurrentPage = () => {
     if (!isReadyForAutoOps) {
       console.warn("saveCurrentPage: Not ready (canvas, document eller page saknas)");
       return false;
     }
-    return documentManagement?.saveCurrentPage();
+    return documentModuleService.saveCurrentPage();
   };
 
   export const isCanvasReadyForAutoOps = () => isReadyForAutoOps;
@@ -390,7 +487,7 @@
   });
 
   // Om forceSave/autosave-funktioner finns i denna fil, lägg liknande skydd där. Om de är externa, lägg skydd i anropen härifrån.
-  export const saveSpecificPage = (pageId, objects) => documentManagement?.saveSpecificPage(pageId, objects);
+  export const saveSpecificPage = (pageId, objects) => documentModuleService.saveSpecificPage(pageId, objects);
   
   // Export recovery functions
   // export { recoverCurrentPage }; - Now defined later in the file
@@ -475,6 +572,60 @@
     }
   };
 
+  // Subscribe to document changes to detect document switches
+  $: if (canvas && $currentDocument) {
+    const docId = $currentDocument.id;
+    
+    // Check for document change if we have a previously tracked document ID
+    if (previousDocumentId && docId !== previousDocumentId) {
+      console.log(`DOCUMENT SWITCH DETECTED: ${previousDocumentId} -> ${docId}`);
+      
+      // Immediately perform a full canvas reset to prevent document content leakage
+      try {
+        console.log(`Performing emergency canvas reset for document switch`);
+        
+        // Remove all event handlers
+        canvas.off();
+        
+        // Clear canvas and internal state completely
+        canvas.clear();
+        canvas.backgroundColor = 'white';
+        canvas._objects = [];
+        if (canvas._objectsToRender) canvas._objectsToRender = [];
+        canvas.discardActiveObject();
+        canvas.__eventListeners = {};
+        
+        // Reset additional internal state that might persist
+        if (canvas._activeObject) canvas._activeObject = null;
+        if (canvas._hoveredTarget) canvas._hoveredTarget = null;
+        
+        // Clear any cached references
+        if (typeof window !== 'undefined') {
+          window._canvasObjects = null;
+          window._previousPageBackup = null;
+          window.$emergencyBackup = null;
+        }
+        
+        // Force multiple renders to ensure clean state
+        canvas.requestRenderAll();
+        canvas.renderAll();
+        
+        // Additional render with delay for reliability
+        setTimeout(() => {
+          canvas.requestRenderAll();
+          canvas.renderAll();
+        }, 50);
+        
+        console.log(`Canvas fully reset for new document ${docId}`);
+      } catch (err) {
+        console.error("Error during document switch canvas reset:", err);
+      }
+    }
+    
+    // Update tracking variable
+    previousDocumentId = docId;
+  }
+
   // Subscribe to current page changes
   $: if ($currentPage && canvas && $currentDocument && $currentPage !== previousPage) {
     console.log(`+==========================================+`);
@@ -485,6 +636,27 @@
     const switchOperationId = Date.now();
     console.log(`Page switch operation ID: ${switchOperationId}`);
     
+    // Create a snapshot of the previous page right before switching for safety
+    if (previousPage && pageRecovery) {
+      console.log(`Creating emergency snapshot of previous page ${previousPage} before switch`);
+      try {
+        // Capture canvas state for the previous page
+        const canvasData = canvas.toJSON(['id', 'linkedObjectIds', 'fromMaster', 'masterId', 'masterObjectId', 'overridable']);
+        const objectCount = canvasData.objects ? canvasData.objects.length : 0;
+        if (objectCount > 0) {
+          window._previousPageBackup = {
+            pageId: previousPage,
+            timestamp: Date.now(),
+            objectCount,
+            canvasJSON: JSON.stringify(canvasData)
+          };
+          console.log(`Stored emergency backup for page ${previousPage} with ${objectCount} objects`);
+        }
+      } catch (err) {
+        console.error(`Error creating emergency snapshot:`, err);
+      }
+    }
+    
     // Store current page ID in the canvas object for direct reference
     canvas.pageId = $currentPage;
     
@@ -492,6 +664,7 @@
     window.$page = $currentPage;
     window.$document = $currentDocument;
     window.$updateDocument = currentDocument.update;
+    window.$canvas = canvas;
     
     // Only set these if they're defined (fix context reference error)
     if (typeof context !== 'undefined') {
@@ -575,9 +748,32 @@
           // Use a dedicated function to save a specific page
           console.log(`SAVE PHASE [${switchOperationId}]: Calling saveSpecificPage for ${previousPage}`);
           
-          // Make a safe copy of objects in case they get modified
-          const objectsToSave = currentObjects.map(obj => obj);
-          saveSpecificPage(previousPage, objectsToSave);
+          // Validate objects before saving
+          const objectsToValidate = currentObjects;
+          console.log(`SAVE PHASE [${switchOperationId}]: Validating ${objectsToValidate.length} objects before saving`);
+          
+          // Quick validation - ensure each object has an ID
+          objectsToValidate.forEach((obj, idx) => {
+            if (!obj.id) {
+              console.log(`Adding missing ID to object #${idx} (${obj.type}) before saving`);
+              obj.id = generateId();
+            }
+            
+            // Log important object info
+            console.log(`Object #${idx}: Type=${obj.type}, ID=${obj.id}, Visible=${obj.visible}, HasData=${!!obj.toJSON}`);
+          });
+          
+          // Make a safe copy of objects with validated properties
+          const objectsToSave = currentObjects.map(obj => {
+            // Force visibility and opacity on objects to ensure they appear when reloaded
+            obj.visible = true;
+            obj.opacity = obj.opacity === 0 ? 1 : obj.opacity;
+            return obj;
+          });
+          
+          // Use await to ensure the save completes before moving on
+          const saveSuccess = documentManagement.saveSpecificPage(previousPage, objectsToSave);
+          console.log(`SAVE PHASE [${switchOperationId}]: Save result: ${saveSuccess ? 'success' : 'failure'}`);
           
           console.log(`SAVE PHASE [${switchOperationId}]: Successfully saved page ${previousPage} with ${objectsToSave.length} objects`);
           
@@ -683,11 +879,109 @@
     const oldPage = previousPage;
     previousPage = $currentPage;
     
-    // Clear the canvas to prepare for new page
+    // Clear the canvas to prepare for new page, with careful error handling
     console.log(`TRANSITION PHASE [${switchOperationId}]: Clearing canvas`);
-    canvas.clear();
-    canvas.backgroundColor = 'white';
-    canvas.renderAll();
+    
+    try {
+      // First, remove all event handlers safely to prevent event errors during clear
+      const tempSaveCurrentPage = saveCurrentPage;
+      const objects = canvas.getObjects();
+      const oldDocId = previousDocumentId;
+      const newDocId = $currentDocument?.id;
+      const isDocumentSwitch = oldDocId !== newDocId;
+      
+      // Log document switching for debugging
+      if (isDocumentSwitch) {
+        console.log(`TRANSITION PHASE [${switchOperationId}]: DOCUMENT SWITCH DETECTED ${oldDocId} -> ${newDocId}`);
+      }
+      
+      // Temporarily disable event handlers that might trigger saveCurrentPage
+      try {
+        // Remove all event handlers for more thorough clearing
+        if (isDocumentSwitch) {
+          console.log(`TRANSITION PHASE [${switchOperationId}]: Removing ALL event handlers for document switch`);
+          canvas.off(); // Remove ALL handlers for document switch
+        } else {
+          // Just remove save-related handlers for page switch
+          canvas.off('object:modified');
+          canvas.off('object:added');
+          canvas.off('object:removed');
+        }
+      } catch (err) {
+        console.warn("Could not remove event handlers before clearing:", err);
+      }
+      
+      // More aggressive clearing for document switches
+      if (isDocumentSwitch) {
+        console.log(`TRANSITION PHASE [${switchOperationId}]: Performing thorough canvas reset for document switch`);
+        
+        // Clear the canvas object entirely
+        canvas.clear();
+        canvas.backgroundColor = 'white';
+        
+        // Force emptying internal arrays
+        if (canvas._objects) canvas._objects = [];
+        if (canvas._objectsToRender) canvas._objectsToRender = [];
+        
+        // Reset canvas internal state as much as possible
+        canvas.discardActiveObject();
+        canvas.__eventListeners = {};
+        
+        // Clear any cached object references
+        window._canvasObjects = null;
+        
+        // Force garbage collection with multiple render calls
+        canvas.requestRenderAll();
+        canvas.renderAll();
+      } else {
+        // Standard clearing for page switches
+        canvas.clear();
+        canvas.backgroundColor = 'white';
+        canvas.renderAll();
+      }
+      
+      // Update tracking variables for document switches
+      if (isDocumentSwitch) {
+        previousDocumentId = newDocId;
+        
+        // Reset global references for new document
+        window._previousPageBackup = null;
+        
+        console.log(`TRANSITION PHASE [${switchOperationId}]: Document switch cleanup complete`);
+      }
+      
+      // Restore event handlers later
+      setTimeout(() => {
+        try {
+          // Add event handlers back
+          eventHandlers.registerEventHandlers();
+        } catch (err) {
+          console.warn("Could not restore event handlers after clearing:", err);
+        }
+      }, 100);
+    } catch (err) {
+      console.error("Error clearing canvas:", err);
+      
+      // Try a more careful approach if the standard clear fails
+      try {
+        // Remove objects one by one
+        const objects = canvas.getObjects();
+        console.log(`TRANSITION PHASE [${switchOperationId}]: Removing ${objects.length} objects one by one`);
+        
+        // Turn off save handlers first
+        canvas.off('object:removed');
+        
+        // Remove each object
+        for (let i = objects.length - 1; i >= 0; i--) {
+          canvas.remove(objects[i]);
+        }
+        
+        canvas.backgroundColor = 'white';
+        canvas.renderAll();
+      } catch (fallbackErr) {
+        console.error("Fallback canvas clearing also failed:", fallbackErr);
+      }
+    }
     
     // Verify canvas is truly cleared
     const objectsAfterClear = canvas.getObjects();
@@ -846,26 +1140,51 @@
     }, 500);
   }
 
-  // Guide-related event handlers have been moved to Canvas.guides.js
-  // These wrapper functions use the module functions from the shared context
+  // Guide-related event handlers now use GuideService
   function handleCreateGuide(event) {
-    guideManagement.handleCreateGuide(event.detail);
+    if (!isReadyForAutoOps) {
+      console.warn("handleCreateGuide: Not ready (canvas, document or page missing)");
+      return;
+    }
+    
+    const { position, orientation } = event.detail;
+    const isHorizontal = event.detail.isHorizontal || orientation === 'horizontal';
+    
+    // Use GuideService to create guide
+    if (isHorizontal) {
+      guideService.createHorizontalGuide(position);
+    } else {
+      guideService.createVerticalGuide(position);
+    }
   }
   
   function handleUpdateGuide(event) {
-    guideManagement.handleUpdateGuide(event.detail);
+    // Note: GuideService handles guide updates differently through dragging
+    // This is for compatibility with existing components
+    handleCreateGuide(event);
   }
   
   function handleDeleteGuide(event) {
-    guideManagement.handleDeleteGuide(event.detail);
+    // Guide deletion is handled directly by GuideService via double-click
+    // This is for compatibility with existing components
+    if (!isReadyForAutoOps) {
+      console.warn("handleDeleteGuide: Not ready (canvas, document or page missing)");
+      return;
+    }
+    
+    // For direct deletion through interface components
+    const { id } = event.detail;
+    if (id) {
+      guideService.handleDeleteGuide({ id });
+    }
   }
   
   function refreshGuides() {
     if (!isReadyForAutoOps) {
-      console.warn("refreshGuides: Not ready (canvas, document eller page saknas)");
+      console.warn("refreshGuides: Not ready (canvas, document or page missing)");
       return;
     }
-    guideManagement.loadGuidesFromDocument();
+    guideService.loadGuidesFromDocument();
   }
 
   import { canvasReady, canvasReadyStatus, updateCanvasReadyStatus, resetCanvasReady } from '$lib/stores/canvasReady.js';
@@ -938,7 +1257,11 @@ function initializePageRecovery() {
   
   // Create a snapshot function that captures the canvas state
   const createSnapshot = () => {
-    if (!canvas || !$currentPage) return null;
+    // Add extra safety checks
+    if (!canvas || !$currentPage || typeof canvas.toJSON !== 'function') {
+      console.warn("Cannot create snapshot: canvas or page is not available");
+      return null;
+    }
     
     try {
       // Create a JSON snapshot of the canvas
@@ -950,6 +1273,12 @@ function initializePageRecovery() {
         'masterObjectId', 
         'overridable'
       ]);
+      
+      // Verify data before returning
+      if (!canvasData || typeof canvasData !== 'object') {
+        console.warn("Cannot create snapshot: invalid canvas data returned");
+        return null;
+      }
       
       return {
         canvasJSON: JSON.stringify(canvasData),
@@ -1011,10 +1340,19 @@ function initializePageRecovery() {
         pageRecovery.stopSnapshots(); // Stop any existing snapshots first
         pageRecovery.startSnapshots(createSnapshot, pageId);
         
-        // Take an immediate snapshot after a page switch
+        // Take an immediate snapshot after a page switch, with extra safety checks
         setTimeout(() => {
-          if (isReadyForAutoOps && canvas && canvas.getObjects && canvas.getObjects().length > 0) {
-            pageRecovery.takeSnapshot(createSnapshot, pageId);
+          if (isReadyForAutoOps && pageId && canvas && 
+              typeof canvas.getObjects === 'function') {
+            try {
+              const objCount = canvas.getObjects().length;
+              if (objCount > 0) {
+                console.log(`Taking snapshot for page ${pageId} with ${objCount} objects`);
+                pageRecovery.takeSnapshot(createSnapshot, pageId);
+              }
+            } catch (snapErr) {
+              console.warn(`Could not take snapshot for page ${pageId}:`, snapErr);
+            }
           }
         }, 2000);
       }
@@ -1025,9 +1363,17 @@ function initializePageRecovery() {
   
   // Take an initial snapshot
   setTimeout(() => {
-    if (isReadyForAutoOps && $currentPage && canvas.getObjects().length > 0) {
-      console.log("Taking initial recovery snapshot");
-      pageRecovery.takeSnapshot(createSnapshot, $currentPage);
+    // Add more null checks to prevent TypeError
+    if (isReadyForAutoOps && $currentPage && canvas && typeof canvas.getObjects === 'function') {
+      try {
+        const objectCount = canvas.getObjects().length;
+        if (objectCount > 0) {
+          console.log("Taking initial recovery snapshot");
+          pageRecovery.takeSnapshot(createSnapshot, $currentPage);
+        }
+      } catch (err) {
+        console.warn("Could not take initial recovery snapshot:", err);
+      }
     }
   }, 5000);
   
@@ -1092,24 +1438,286 @@ export function recoverCurrentPage() {
   return pageRecovery.recoverPage($currentPage, applySnapshot);
 }
 
+  /**
+   * Centralized function to initialize all services in a consistent manner
+   * This replaces scattered initialization throughout the codebase
+   */
+  function initializeServices() {
+    if (!canvas) {
+      console.error("initializeServices: Cannot initialize services - Canvas is null or undefined");
+      return false;
+    }
+
+    console.log("Initializing all services with canvas reference");
+    
+    try {
+      // Core services first (these provide foundations for others)
+      contextService.initialize({
+        // Canvas references
+        canvas,
+        canvasElement,
+        canvasContainer,
+        imageInput,
+        
+        // Svelte stores
+        currentDocument: $currentDocument,
+        currentPage: $currentPage,
+        activeTool: $activeTool,
+        currentToolOptions: $currentToolOptions,
+        clipboard,
+        
+        // State variables
+        width,
+        height,
+        selectedObject,
+        isMounted,
+        showContextMenu,
+        contextMenuX,
+        contextMenuY,
+        contextMenuObject,
+        canvasScrollX,
+        canvasScrollY,
+        zoomLevel,
+        isReadyForAutoOps,
+        
+        // Utility functions
+        dispatch,
+        generateId,
+        convertToPixels,
+        snapToGridPoint,
+        setupCanvasForTool,
+        loadDocument,
+        
+        // Version information
+        version: {
+          appVersion: "1.0.0", // Update with your actual version
+          fabricVersion: fabric.version || '5.3.0',
+          lastUpdated: new Date().toISOString()
+        }
+      });
+      
+      // Core services (these should be initialized first)
+      canvasService.initialize(canvas);
+      documentService.initialize(canvas);
+      
+      // Text flow service needs to be initialized early as other services depend on it
+      textFlowService.initialize({ canvas });
+      
+      // Document handling services
+      documentModuleService.initialize({
+        canvas,
+        textFlow: textFlowService, // Pass textFlowService for backward compatibility
+        generateId,
+        activeTool: $activeTool,
+        context: contextService.createProxy()
+      });
+      
+      masterPageService.initialize(canvas);
+      
+      // Canvas object manipulation services
+      layerService.initialize({ canvas });
+      objectService.initialize({
+        canvas,
+        dispatch,
+        generateId,
+        textFlow: textFlowService, // Pass textFlowService for backward compatibility
+        activeTool: $activeTool
+      });
+      
+      // Interactive services
+      toolService.initialize({ canvas });
+      toolService.setupCanvasForTool($activeTool);
+      
+      historyService.initialize({
+        canvas,
+        onChange: (state) => {
+          canUndo = state.canUndo;
+          canRedo = state.canRedo;
+          
+          // Dispatch event both as a component event and a DOM event for Toolbar to listen
+          dispatch('historyChange', { canUndo, canRedo });
+          
+          // Create a custom event for other components to listen to
+          const historyEvent = new CustomEvent('historyChange', { 
+            detail: { canUndo, canRedo },
+            bubbles: true 
+          });
+          document.dispatchEvent(historyEvent);
+        }
+      });
+      
+      // Visualization services (these depend on core services)
+      guideService.initialize({
+        canvas,
+        width,
+        height
+      });
+      
+      // Grid service is dynamically imported, so handle it differently
+      import('$lib/services/GridService').then(module => {
+        const gridService = module.default;
+        gridService.initialize({
+          canvas,
+          canvasElement,
+          width,
+          height
+        });
+        
+        // If grid is enabled, render it
+        if ($currentDocument?.metadata?.grid?.enabled) {
+          gridService.renderGrid();
+        }
+        
+        // Update context with gridService
+        const context = contextService.createProxy();
+        if (context) {
+          context.update({
+            gridService,
+            renderGrid: gridService.renderGrid,
+            toggleGrid: gridService.toggleGrid,
+            updateGridProperties: gridService.updateGridProperties,
+            snapToGrid: gridService.snapToGrid,
+            convertToPixels: gridService.convertToPixels
+          });
+        }
+      });
+      
+      // Update context with all service references and methods
+      const context = updateContextWithServices();
+      
+      // Event handlers for canvas interactions
+      if (!eventHandlers) {
+        eventHandlers = createEventHandlers(context);
+      }
+      eventHandlers.registerEventHandlers();
+      
+      // Initialize ServiceProvider with same canvas reference if it exists
+      if (typeof window !== 'undefined' && window.$serviceProvider && 
+          typeof window.$serviceProvider.initializeCanvas === 'function') {
+        window.$serviceProvider.initializeCanvas(canvas);
+      }
+      
+      // Update global references for debugging/recovery
+      window.$globalContext = context;
+      window.$canvas = canvas;
+      
+      console.log("All services initialized successfully");
+      return true;
+    } catch (error) {
+      console.error("Error initializing services:", error);
+      return false;
+    }
+  }
+  
   onMount(() => {
     isMounted = true;
     
     // Set up global recovery references early
     window.saveDocument = saveDocument;
     
+    // Update the global canvas reference for emergency access
+    window.$canvas = canvas;
+    
+    // CRITICAL: Check if we're loading a new document ID
+    // This helps fix objects appearing in new documents
+    if (typeof window !== 'undefined') {
+      const currentDocId = $currentDocument?.id || null;
+      const previousDocId = window._previousDocumentId || null;
+      
+      // If we're switching documents, ensure a complete canvas reset
+      if (currentDocId !== previousDocId && previousDocId !== null && currentDocId !== null) {
+        console.log(`MOUNT: Document switch detected from ${previousDocId} to ${currentDocId} - performing FULL canvas reset`);
+        setTimeout(() => {
+          if (canvas) {
+            // Complete canvas wipe for document switches
+            try {
+              // Remove all event handlers first
+              canvas.off();
+              
+              // Clear the canvas completely
+              canvas.clear();
+              canvas.backgroundColor = 'white';
+              
+              // Force reset internal arrays
+              canvas._objects = [];
+              if (canvas._objectsToRender) canvas._objectsToRender = [];
+              
+              // Reset canvas state
+              canvas.discardActiveObject();
+              canvas.__eventListeners = {};
+              
+              // Reset additional internal state that might persist between documents
+              if (canvas._activeObject) canvas._activeObject = null;
+              if (canvas._hoveredTarget) canvas._hoveredTarget = null;
+              
+              // Clear document-related global variables to prevent cross-contamination
+              window._canvasObjects = null;
+              window._previousPageBackup = null;
+              window.$emergencyBackup = null;
+              
+              // CRITICAL: Call initializeForNewDocument to fully reset internal state
+              const initializeNewDoc = () => {
+                if (!canvas) return;
+                // Create a fresh canvas internal state
+                canvas.clear();
+                canvas.backgroundColor = 'white';
+                canvas._objects = [];
+                if (canvas._objectsToRender) canvas._objectsToRender = [];
+                canvas.requestRenderAll();
+                canvas.renderAll();
+              };
+              initializeNewDoc();
+              
+              // Force multiple renders with different timing
+              canvas.requestRenderAll();
+              canvas.renderAll();
+              
+              setTimeout(() => {
+                canvas.requestRenderAll();
+                canvas.renderAll();
+              }, 50);
+              
+              // Update doc ID tracking
+              window._previousDocumentId = currentDocId;
+              
+              console.log(`MOUNT: Complete canvas reset completed for new document ${currentDocId}`);
+            } catch (err) {
+              console.error("Error during canvas reset:", err);
+            }
+          }
+        }, 100);
+      }
+    }
+    
     // Log fabric.js version info
-    console.log("Fabric version detected:", detectFabricVersion());
-    console.log("Available fabric classes:", {
+    console.log("Fabric version detected:", getFabricVersion());
+    const validClasses = {
       Canvas: !!fabric.Canvas,
       StaticCanvas: !!fabric.StaticCanvas,
       Textbox: !!fabric.Textbox,
       IText: !!fabric.IText,
-      Text: !!fabric.Text
-    });
+      Text: !!fabric.Text,
+      Rect: !!fabric.Rect, 
+      Circle: !!fabric.Circle,
+      Line: !!fabric.Line,
+      Group: !!fabric.Group
+    };
+    
+    console.log("Available fabric classes:", validClasses);
+    
+    // Check if critical classes are missing
+    const missingClasses = Object.entries(validClasses)
+      .filter(([_, exists]) => !exists)
+      .map(([name]) => name);
+      
+    if (missingClasses.length > 0) {
+      console.error(`WARNING: Missing critical Fabric.js classes: ${missingClasses.join(', ')}`);
+    }
     
     // Initialize Fabric.js canvas with the given dimensions using our helper
     try {
+      console.log("Starting canvas initialization...");
+      
       // Update canvas status to initializing
       updateCanvasReadyStatus({
         hasCanvas: false,
@@ -1118,17 +1726,51 @@ export function recoverCurrentPage() {
         errorMessage: "Canvas initializing..."
       });
       
-      canvas = createCanvas(canvasElement, {
-        width,
-        height,
-        selection: true,
-        preserveObjectStacking: true,
-        backgroundColor: 'white'
-      });
-      
-      if (!canvas) {
-        throw new Error("Failed to create canvas");
+      // IMPORTANT: Make sure the DOM element exists before initializing
+      if (!canvasElement) {
+        throw new Error("Canvas DOM element not found");
       }
+      
+      // Make sure fabric.Canvas is properly defined
+      if (!fabric.Canvas) {
+        console.error("fabric.Canvas is undefined. Available fabric classes:", fabric);
+        throw new Error("fabric.Canvas is not defined. This usually indicates a problem with how Fabric.js was imported.");
+      }
+      
+      // Initialize with better error handling
+      try {
+        console.log("Creating canvas with createCanvas helper...");
+        canvas = createCanvas(canvasElement, {
+          width,
+          height,
+          selection: true,
+          preserveObjectStacking: true,
+          backgroundColor: 'white'
+        });
+      } catch (helperError) {
+        console.error("Error using createCanvas helper:", helperError);
+        
+        // Try direct initialization as fallback
+        console.log("Trying direct fabric.Canvas initialization...");
+        canvas = new fabric.Canvas(canvasElement, {
+          width,
+          height,
+          selection: true,
+          preserveObjectStacking: true,
+          backgroundColor: 'white'
+        });
+      }
+      
+      // Verify canvas was created successfully
+      if (!canvas) {
+        throw new Error("Canvas creation failed - canvas object is undefined or null");
+      }
+      
+      // Add setupForTool to canvas instance
+      canvas.setupForTool = setupCanvasForTool;
+      
+      // Update global reference for emergency access and other modules
+      window.$canvas = canvas;
       
       // Update canvas status to success
       updateCanvasReadyStatus({
@@ -1138,15 +1780,33 @@ export function recoverCurrentPage() {
         errorMessage: null
       });
       
-      console.log("Canvas initialized successfully");
+      console.log("Canvas initialized successfully:", canvas);
+      
+      // Add setupForTool to canvas instance
+      canvas.setupForTool = setupCanvasForTool;
+      
+      // Initialize all services through our centralized function
+      initializeServices();
     } catch (error) {
       console.error("Canvas initialization failed:", error);
       setCanvasError(`Canvas initialization failed: ${error.message}`);
       
-      // Last resort fallback - try direct initialization with different approach
+      // Last resort fallback - try with more explicit approach
       try {
-        console.log("Attempting fallback canvas initialization...");
+        console.log("Attempting last-resort canvas initialization...");
         
+        // Create the canvas element from scratch
+        const newCanvasElement = document.createElement('canvas');
+        newCanvasElement.width = width;
+        newCanvasElement.height = height;
+        
+        // Replace the existing element
+        if (canvasElement && canvasElement.parentNode) {
+          canvasElement.parentNode.replaceChild(newCanvasElement, canvasElement);
+          canvasElement = newCanvasElement;
+        }
+        
+        // Try to initialize again
         canvas = new fabric.Canvas(canvasElement);
         canvas.setWidth(width);
         canvas.setHeight(height);
@@ -1162,42 +1822,16 @@ export function recoverCurrentPage() {
           errorMessage: null
         });
         
+        // Add setupForTool to canvas instance
+        canvas.setupForTool = setupCanvasForTool;
+        
         console.log("Canvas fallback initialization succeeded");
+        
+        // Initialize services after fallback initialization
+        initializeServices();
       } catch (fallbackError) {
-        console.error("Canvas fallback initialization also failed:", fallbackError);
-        setCanvasError(`Canvas fallback initialization failed: ${fallbackError.message}`);
-        
-        // Create a recovery interval that keeps trying to initialize the canvas
-        const recoveryAttempt = setInterval(() => {
-          console.log("Attempting canvas recovery...");
-          try {
-            // Try one more time with a different approach
-            if (!canvas) {
-              canvas = fabric.StaticCanvas ? new fabric.StaticCanvas(canvasElement) : new fabric.Canvas(canvasElement);
-              canvas.setWidth(width);
-              canvas.setHeight(height);
-              canvas.backgroundColor = 'white';
-              
-              console.log("Canvas recovery succeeded");
-              updateCanvasReadyStatus({
-                hasCanvas: true,
-                isFullyInitialized: true,
-                hasError: false,
-                errorMessage: null
-              });
-              
-              clearInterval(recoveryAttempt);
-            }
-          } catch (recoveryError) {
-            console.error("Canvas recovery attempt failed:", recoveryError);
-          }
-        }, 1000);
-        
-        // Stop trying after 10 seconds
-        setTimeout(() => {
-          clearInterval(recoveryAttempt);
-          console.error("Canvas recovery abandoned after timeout");
-        }, 10000);
+        console.error("All canvas initialization attempts failed:", fallbackError);
+        setCanvasError(`Canvas initialization failed completely: ${fallbackError.message}. Please check the console for more details.`);
       }
     }
     
@@ -1220,46 +1854,11 @@ export function recoverCurrentPage() {
       }
     }
     
-    // Initialize TextFlow manager
-    textFlow = new TextFlow(canvas);
-    
-    // Initialize HistoryManager
-    historyManager = new HistoryManager(canvas, {
-      onChange: (state) => {
-        canUndo = state.canUndo;
-        canRedo = state.canRedo;
-        
-        // Dispatch event both as a component event and a DOM event for Toolbar to listen
-        dispatch('historyChange', { canUndo, canRedo });
-        
-        // Create a custom event for other components to listen to
-        const historyEvent = new CustomEvent('historyChange', { 
-          detail: { canUndo, canRedo },
-          bubbles: true 
-        });
-        document.dispatchEvent(historyEvent);
-      }
-    });
-    
-    // Initialize canvas context and modules
-    const context = initializeCanvasContext();
-    
-    // Register event handlers
-    eventHandlers.registerEventHandlers();
-    
-    // Setup canvas for initial tool
-    setupCanvasForTool($activeTool);
-    
-    // Initialize grid if enabled
-    if ($currentDocument?.metadata?.grid?.enabled && gridManagement) {
-      gridManagement.renderGrid();
-    }
-    
-    // Initialize guides for current page
-    if (isReadyForAutoOps) {
+    // Initialize guides for current page if available
+    if (isReadyForAutoOps && guideService.initialized) {
       refreshGuides();
     } else {
-      console.warn("refreshGuides: Skipped vid init, ej redo");
+      console.warn("refreshGuides: Skipped at init, not ready");
     }
     
     // Initialize page recovery system via onMount to ensure component context
@@ -1267,14 +1866,76 @@ export function recoverCurrentPage() {
     
     // Create a derived store to update context when store values change
     $: {
-      if (context && context.update) {
-        console.log("Canvas.svelte: Updating context with new document/page data");
-        context.update({
-          currentDocument: $currentDocument || null,
-          currentPage: $currentPage || null,
-          activeTool: $activeTool,
-          currentToolOptions: $currentToolOptions
+      if (contextService.initialized) {
+        const context = contextService.createProxy();
+        if (context && context.update) {
+          console.log("Canvas.svelte: Updating context with new document/page data");
+          context.update({
+            currentDocument: $currentDocument || null,
+            currentPage: $currentPage || null,
+            activeTool: $activeTool,
+            currentToolOptions: $currentToolOptions,
+            isReadyForAutoOps,
+            hasActiveObjects: canvas ? canvas.getObjects().length > 0 : false
+          });
+        }
+      }
+    }
+    
+    /**
+     * Centralized function to clean up all services in a consistent way
+     */
+    function cleanupServices() {
+      console.log("Cleaning up all services");
+      
+      try {
+        // First remove event handlers to prevent errors during cleanup
+        if (eventHandlers && typeof eventHandlers.removeEventHandlers === 'function') {
+          console.log("Removing event handlers");
+          eventHandlers.removeEventHandlers();
+        } else {
+          console.warn("No eventHandlers.removeEventHandlers function available");
+        }
+        
+        // Clean up services in roughly reverse order of initialization
+        
+        // Visualization services
+        console.log("Cleaning up visualization services");
+        guideService.cleanup();
+        
+        // Dynamic import GridService for cleanup
+        import('$lib/services/GridService').then(module => {
+          const gridService = module.default;
+          gridService.cleanup();
         });
+        
+        // Interactive services
+        console.log("Cleaning up interactive services");
+        historyService.cleanup();
+        toolService.cleanup();
+        textFlowService.cleanup();
+        
+        // Canvas object manipulation services
+        console.log("Cleaning up object/layer manipulation services");
+        objectService.cleanup();
+        layerService.cleanup();
+        
+        // Document handling services
+        console.log("Cleaning up document services");
+        documentModuleService.cleanup();
+        masterPageService.cleanup();
+        
+        // Core services last as other services may depend on them
+        console.log("Cleaning up core services");
+        documentService.cleanup();
+        canvasService.cleanup();
+        contextService.cleanup();
+        
+        console.log("All services cleaned up successfully");
+        return true;
+      } catch (err) {
+        console.error("Error during services cleanup:", err);
+        return false;
       }
     }
     
@@ -1284,21 +1945,13 @@ export function recoverCurrentPage() {
       // Reset canvas readiness state
       resetCanvasReady();
       
-      // Clean up canvas on component unmount
+      // Clean up canvas and services on component unmount
       try {
-        // Remove event handlers first
-        if (eventHandlers && typeof eventHandlers.removeEventHandlers === 'function') {
-          console.log("Removing event handlers");
-          eventHandlers.removeEventHandlers();
-        } else {
-          console.warn("No eventHandlers.removeEventHandlers function available");
-        }
+        // Clean up all services first
+        cleanupServices();
         
-        // Clean up history manager
-        if (historyManager) {
-          console.log("Disposing history manager");
-          historyManager.dispose();
-        }
+        // Stop page recovery
+        pageRecovery.stopSnapshots();
         
         // Finally dispose the canvas
         if (canvas) {
@@ -1310,10 +1963,6 @@ export function recoverCurrentPage() {
         // Clear global references
         window.$canvas = null;
         window.$globalContext = null;
-        
-        // Stop page recovery (this is redundant with the onDestroy in initializePageRecovery)
-        // but included as a safety measure
-        pageRecovery.stopSnapshots();
         
         console.log("Canvas cleanup complete");
       } catch (err) {
