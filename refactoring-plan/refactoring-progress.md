@@ -30,7 +30,7 @@ This document tracks the progress of the PageStudio refactoring effort.
 - ✅ Implemented dependency injection pattern
 - ✅ Updated CHANGELOG.md to reflect changes
 - ✅ Service-based approach for shared context (replaced createCanvasContext)
-- 🔄 Integration of all services with the Toolbar component (in progress)
+- ✅ Integration of all services with the Toolbar component
 - 🔄 Update existing tests to work with the service-based architecture (in progress)
 
 ## Next Steps
@@ -42,11 +42,15 @@ This document tracks the progress of the PageStudio refactoring effort.
    - Added robust error handling during initialization and cleanup
    - Updated context management to work with the service architecture
 
-2. Complete the testing coverage for all services
+2. ✅ Finalize integration of all services with the Toolbar component
+   - Updated DrawingTools.svelte to use ToolService for tool management
+   - Updated Toolbar.svelte to use services instead of direct canvas functions
+   - Improved initialization of services from the Toolbar component
+   - Enhanced error handling and state management in toolbar components
 
-3. Update architectural documentation to reflect the new service-based approach
+3. Complete the testing coverage for all services
 
-4. Finalize integration of all services with the Toolbar component
+4. Update architectural documentation to reflect the new service-based approach
 
 ## Known Issues
 

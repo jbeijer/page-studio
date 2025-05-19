@@ -21,6 +21,7 @@ och projektet följer [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Created HistoryService to handle undo/redo functionality
 - Created ToolService to handle tool switching and canvas setup
 - Created TextFlowService to handle text flow between linked textboxes
+- Updated Toolbar.svelte and DrawingTools.svelte to use services instead of direct canvas manipulation
 
 ### Fixed
 - Temporary downgrade from Svelte 5 to Svelte 4 for compatibility

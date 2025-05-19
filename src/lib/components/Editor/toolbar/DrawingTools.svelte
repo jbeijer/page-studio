@@ -55,57 +55,21 @@
     'l': ToolType.LINE
   };
   
-  // Handle tool selection
+  // Import toolService for better integration
+  import toolService from '$lib/services/ToolService';
+  
+  // Handle tool selection using ToolService
   function handleToolClick(toolType) {
     console.log(`Tool click: ${toolType}`);
     
-    // First ensure the global activeTool store is updated
-    setActiveTool(toolType);
+    // Use ToolService to set the active tool
+    // This handles both updating the store and configuring the canvas
+    toolService.setActiveTool(toolType);
     
     // Update context if provided
     if (context) {
       context.lastSelectedTool = toolType;
     }
-    
-    // Force canvas to refresh after tool change
-    // This addresses issues with tool switching not being fully applied
-    setTimeout(() => {
-      // Try to trigger a canvas update by forcing a redraw
-      if (window.$canvas && window.$canvas.renderAll) {
-        console.log(`Forcing canvas render after tool change to ${toolType}`);
-        
-        // Setup canvas for the tool if possible
-        if (window.$canvas.setupForTool) {
-          window.$canvas.setupForTool(toolType);
-        }
-        
-        // Force rendering
-        window.$canvas.requestRenderAll();
-        window.$canvas.renderAll();
-        
-        // Apply cursor change directly to canvas element
-        if (window.$canvas.wrapperEl) {
-          // Apply cursor based on tool
-          switch (toolType) {
-            case 'text':
-              window.$canvas.wrapperEl.style.cursor = 'text';
-              break;
-            case 'select':
-              window.$canvas.wrapperEl.style.cursor = 'default';
-              break;
-            case 'rectangle':
-            case 'ellipse':
-            case 'line':
-            case 'image':
-              window.$canvas.wrapperEl.style.cursor = 'crosshair';
-              break;
-            default:
-              window.$canvas.wrapperEl.style.cursor = 'default';
-              break;
-          }
-        }
-      }
-    }, 100);
   }
   
   // Setup keyboard shortcuts on mount

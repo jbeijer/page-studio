@@ -3,6 +3,13 @@
   import { activeTool } from '$lib/stores/toolbar';
   import Canvas from './Canvas.svelte';
   
+  // Import services
+  import toolService from '$lib/services/ToolService';
+  import layerService from '$lib/services/LayerService';
+  import objectService from '$lib/services/ObjectService';
+  import historyService from '$lib/services/HistoryService';
+  import contextService from '$lib/services/ContextService';
+  
   // Import toolbar modules
   import { 
     createToolbarContext, 
@@ -42,34 +49,34 @@
     lastSelectedTool: $activeTool
   });
   
-  // Initialize from canvas component
-  function initializeFromCanvas(component) {
+  // Initialize using services
+  function initializeServices(component) {
     if (!component) return;
     
-    // Get access to canvas functions
+    // We still need getCanvas for some operations
     getCanvas = component.getCanvas;
-    bringForward = component.bringForward;
-    sendBackward = component.sendBackward;
-    bringToFront = component.bringToFront;
-    sendToBack = component.sendToBack;
-    undo = component.undo;
-    redo = component.redo;
-    copySelectedObjects = component.copySelectedObjects;
-    cutSelectedObjects = component.cutSelectedObjects;
-    pasteObjects = component.pasteObjects;
+    
+    // Use layerService for layer operations
+    bringForward = layerService.bringForward;
+    sendBackward = layerService.sendBackward;
+    bringToFront = layerService.bringToFront;
+    sendToBack = layerService.sendToBack;
+    
+    // Use historyService for undo/redo
+    undo = historyService.undo;
+    redo = historyService.redo;
+    
+    // Use objectService for object manipulation
+    copySelectedObjects = objectService.copySelectedObjects;
+    cutSelectedObjects = objectService.cutSelectedObjects;
+    pasteObjects = objectService.pasteObjects;
     
     // Log available functions for debugging
-    console.log("Toolbar initialized with canvas functions:", {
-      getCanvas: typeof getCanvas,
-      bringForward: typeof bringForward,
-      sendBackward: typeof sendBackward,
-      bringToFront: typeof bringToFront,
-      sendToBack: typeof sendToBack,
-      undo: typeof undo,
-      redo: typeof redo,
-      copySelectedObjects: typeof copySelectedObjects,
-      cutSelectedObjects: typeof cutSelectedObjects,
-      pasteObjects: typeof pasteObjects
+    console.log("Toolbar initialized with services:", {
+      layerService: layerService.initialized ? 'initialized' : 'not initialized',
+      objectService: objectService.initialized ? 'initialized' : 'not initialized',
+      historyService: historyService.initialized ? 'initialized' : 'not initialized',
+      toolService: toolService.initialized ? 'initialized' : 'not initialized'
     });
   }
   
@@ -88,8 +95,26 @@
   }
   
   // Update history state
-  function updateHistoryState(event) {
-    const { canUndo: newCanUndo, canRedo: newCanRedo } = event.detail;
+  // This can be called both as an event handler or directly from historyService
+  function updateHistoryState(stateOrEvent) {
+    // Handle both event format (from DOM events) and direct format (from historyService)
+    let newCanUndo, newCanRedo;
+    
+    if (stateOrEvent && stateOrEvent.detail) {
+      // It's a DOM event
+      newCanUndo = stateOrEvent.detail.canUndo;
+      newCanRedo = stateOrEvent.detail.canRedo;
+    } else if (stateOrEvent && typeof stateOrEvent === 'object') {
+      // It's a direct state object from historyService
+      newCanUndo = stateOrEvent.canUndo;
+      newCanRedo = stateOrEvent.canRedo;
+    } else {
+      // If no state provided, get it from historyService
+      newCanUndo = historyService.canUndo();
+      newCanRedo = historyService.canRedo();
+    }
+    
+    // Update local state
     canUndo = newCanUndo;
     canRedo = newCanRedo;
     
@@ -117,16 +142,45 @@
       return;
     }
     
-    // Check if the component has the necessary functions
-    if (canvasComponent.undo && typeof canvasComponent.undo === 'function' && 
-        canvasComponent.getCanvas && typeof canvasComponent.getCanvas === 'function' &&
-        canvasComponent.saveCurrentPage && typeof canvasComponent.saveCurrentPage === 'function') {
-      
-      initializeFromCanvas(canvasComponent);
-      
-      // Set up canvas event listeners
+    // Check if the canvas component has the getCanvas function at minimum
+    if (canvasComponent.getCanvas && typeof canvasComponent.getCanvas === 'function') {
       const fabricCanvas = canvasComponent.getCanvas();
+      
       if (fabricCanvas) {
+        // Check if services need initialization
+        if (!layerService.initialized || !objectService.initialized || 
+            !historyService.initialized || !toolService.initialized) {
+          
+          console.log("Initializing services that aren't already initialized");
+          
+          // Initialize any services that aren't already initialized
+          if (!layerService.initialized) {
+            layerService.initialize({ canvas: fabricCanvas });
+          }
+          
+          if (!objectService.initialized) {
+            objectService.initialize({ 
+              canvas: fabricCanvas,
+              generateId: () => 'obj-' + Date.now() + '-' + Math.floor(Math.random() * 1000)
+            });
+          }
+          
+          if (!historyService.initialized) {
+            historyService.initialize({ 
+              canvas: fabricCanvas,
+              onChange: updateHistoryState
+            });
+          }
+          
+          if (!toolService.initialized) {
+            toolService.initialize({ canvas: fabricCanvas });
+          }
+        }
+        
+        // Now initialize the toolbar with services
+        initializeServices(canvasComponent);
+        
+        // Set up canvas event listeners for selection state
         // Remove any existing listeners to prevent duplicates
         fabricCanvas.off('selection:created', updateSelectionState);
         fabricCanvas.off('selection:updated', updateSelectionState);
@@ -138,7 +192,7 @@
         fabricCanvas.on('selection:cleared', updateSelectionState);
       }
     } else {
-      console.warn('Canvas component does not have all the required methods');
+      console.warn('Canvas component does not have the required getCanvas method');
     }
   }
   
@@ -160,6 +214,10 @@
         canvas.off('selection:updated', updateSelectionState);
         canvas.off('selection:cleared', updateSelectionState);
       }
+      
+      // No need to clean up services here as they are singleton instances
+      // that are cleaned up by the parent components, but we log for debugging
+      console.log("Toolbar component unmounting");
     };
   });
   
@@ -167,6 +225,14 @@
   $: if (canvasComponent) {
     console.log("Canvas component updated:", canvasComponent);
     tryInitializeCanvas();
+    
+    // Update history state immediately if historyService is already initialized
+    if (historyService.initialized) {
+      updateHistoryState({
+        canUndo: historyService.canUndo(),
+        canRedo: historyService.canRedo()
+      });
+    }
   }
 </script>
 
