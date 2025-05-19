@@ -1,26 +1,28 @@
 <script>
   import { currentDocument } from '$lib/stores/document';
+  import { onMount } from 'svelte';
+  import documentService from '$lib/services/DocumentService';
+  import gridService from '$lib/services/GridService';
+  
+  let initialized = false;
+  
+  // Initialize services
+  onMount(() => {
+    initialized = true;
+    return () => {
+      initialized = false;
+    };
+  });
   
   /**
    * Updates grid settings in the document
    * @param {Object} settings - New grid settings
    */
   function updateGridSettings(settings) {
-    if (!$currentDocument) return;
+    if (!initialized || !$currentDocument) return;
     
-    currentDocument.update(doc => {
-      return {
-        ...doc,
-        metadata: {
-          ...doc.metadata,
-          grid: {
-            ...doc.metadata.grid,
-            ...settings
-          }
-        },
-        lastModified: new Date()
-      };
-    });
+    // Use GridService to update grid properties
+    gridService.updateGridProperties(settings);
   }
   
   /**
@@ -28,20 +30,14 @@
    * @param {Object} settings - New ruler settings
    */
   function updateRulerSettings(settings) {
-    if (!$currentDocument) return;
+    if (!initialized || !$currentDocument) return;
     
-    currentDocument.update(doc => {
-      return {
-        ...doc,
-        metadata: {
-          ...doc.metadata,
-          rulers: {
-            ...doc.metadata.rulers,
-            ...settings
-          }
-        },
-        lastModified: new Date()
-      };
+    // Use DocumentService to update metadata
+    documentService.updateDocumentMetadata({
+      rulers: {
+        ...($currentDocument?.metadata?.rulers || {}),
+        ...settings
+      }
     });
   }
   
@@ -50,7 +46,8 @@
    * @param {Event} e - Change event
    */
   function toggleGrid(e) {
-    updateGridSettings({ enabled: e.target.checked });
+    if (!initialized) return;
+    gridService.toggleGrid(e.target.checked);
   }
   
   /**

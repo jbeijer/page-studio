@@ -36,15 +36,112 @@ export function createDocument({
   pageCount = 1 
 }) {
   const now = new Date();
-  const docId = `doc-${now.getTime()}`;
+  
+  // Create a truly unique ID that's different from any previous document
+  // Using multiple random components and a timestamp to ensure uniqueness
+  const timestamp = now.getTime();
+  const randomPart1 = Math.floor(Math.random() * 1000000);
+  const randomPart2 = Math.floor(Math.random() * 1000000);
+  // Create hash-like ID by combining timestamp and two random components
+  const docId = `doc-${timestamp}-${randomPart1}-${randomPart2}`;
+  
+  // Force clearing any document-related globals before creating a new document
+  if (typeof window !== 'undefined') {
+    // Save the previous document ID for transition handling
+    window._previousDocumentId = window.$document?.id || null;
+    
+    // Log the creation of a new document with unique ID
+    console.log(`Creating new document with ID ${docId}, saved previous ID: ${window._previousDocumentId}`);
+    console.log(`Using highly unique ID format with multiple random components: ${docId}`);
+    
+    // Clear ALL potentially corrupting global state - very aggressive cleanup
+    window._previousPageBackup = null;
+    window.$emergencyBackup = null;
+    window._canvasObjects = null;
+    window._pageSaveTimeout && clearTimeout(window._pageSaveTimeout);
+    
+    // Reset any other potentially conflicting global state
+    if (window.$globalContext) {
+      try {
+        // Clear any stored page references
+        if (window.$globalContext.currentPage) {
+          window.$globalContext.currentPage = null;
+        }
+      } catch (err) {
+        console.warn("Error cleaning global context:", err);
+      }
+    }
+    
+    // Clear canvas internal references if they exist - multi-step aggressive cleanup
+    if (window.$canvas) {
+      try {
+        console.log("Performing complete canvas internal state reset for new document");
+        
+        // First - remove all event handlers that might be tied to previous document
+        window.$canvas.off && window.$canvas.off();
+        
+        // Second - aggressively clear all internal arrays and state
+        if (window.$canvas._objects) window.$canvas._objects = [];
+        if (window.$canvas._objectsToRender) window.$canvas._objectsToRender = [];
+        
+        // Third - reset additional internal state that might persist
+        if (window.$canvas._activeObject) window.$canvas._activeObject = null;
+        if (window.$canvas._hoveredTarget) window.$canvas._hoveredTarget = null;
+        if (window.$canvas._currentTransform) window.$canvas._currentTransform = null;
+        
+        // Fourth - explicitly clear the canvas multiple times
+        window.$canvas.clear && window.$canvas.clear();
+        if (window.$canvas.backgroundColor) window.$canvas.backgroundColor = 'white';
+        
+        // Force a render cycle
+        window.$canvas.requestRenderAll && window.$canvas.requestRenderAll();
+        window.$canvas.renderAll && window.$canvas.renderAll();
+        
+        // Multiple delayed renders for thorough clearing
+        setTimeout(() => {
+          if (window.$canvas) {
+            // Clear again for safety
+            window.$canvas.clear && window.$canvas.clear();
+            if (window.$canvas.backgroundColor) window.$canvas.backgroundColor = 'white';
+            
+            // Reset internal arrays again
+            if (window.$canvas._objects) window.$canvas._objects = [];
+            if (window.$canvas._objectsToRender) window.$canvas._objectsToRender = [];
+            
+            // Force render
+            window.$canvas.requestRenderAll && window.$canvas.requestRenderAll();
+            window.$canvas.renderAll && window.$canvas.renderAll();
+          }
+        }, 50);
+        
+        // Final third cycle for absolute certainty
+        setTimeout(() => {
+          if (window.$canvas) {
+            window.$canvas.clear && window.$canvas.clear();
+            window.$canvas.requestRenderAll && window.$canvas.requestRenderAll();
+            window.$canvas.renderAll && window.$canvas.renderAll();
+          }
+        }, 100);
+        
+        console.log("Canvas reset for new document completed successfully");
+      } catch (err) {
+        console.warn("Error clearing canvas during document creation:", err);
+      }
+    }
+  }
   
   const pages = [];
   
-  // Create initial pages
+  // Create initial pages with explicit empty canvas JSON to prevent content leakage
   for (let i = 0; i < pageCount; i++) {
     pages.push({
       id: `page-${i + 1}`,
-      canvasJSON: null,
+      // Initialize with explicit empty canvas instead of null
+      canvasJSON: JSON.stringify({
+        "version": "5.3.0",
+        "objects": [],
+        "background": "white"
+      }),
       masterPageId: null,
       overrides: {},
       guides: {

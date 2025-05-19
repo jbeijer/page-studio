@@ -2,11 +2,8 @@
  * Canvas.document.js
  * Manages document-related functionality for the Canvas component
  */
-import * as fabricModule from 'fabric';
-
-// Handle different module export patterns
-const fabric = fabricModule.fabric || fabricModule.default || fabricModule;
-import { getTextObjectFactory } from '$lib/utils/fabric-helpers';
+import { fabric } from 'fabric';
+import { createTextObject } from '$lib/utils/fabric-helpers';
 
 /**
  * Create document management functions for the Canvas component
@@ -33,18 +30,33 @@ export function createDocumentManagement(context) {
     let pageId = context.get ? context.get('currentPage') : context.currentPage;
     
     // Use null coalescing to handle possible Svelte store objects
-    if (doc && typeof doc.subscribe === 'function' && doc.$state) {
-      doc = doc.$state;
+    if (doc && typeof doc.subscribe === 'function') {
+      try {
+        // Handle both Svelte 4 and 5 stores
+        doc = doc.$state || doc.get();
+        console.log("Extracted document value from Svelte store");
+      } catch (err) {
+        console.log("Could not extract document from store:", err);
+      }
     }
     
-    if (pageId && typeof pageId.subscribe === 'function' && pageId.$state) {
-      pageId = pageId.$state;
+    if (pageId && typeof pageId.subscribe === 'function') {
+      try {
+        // Handle both Svelte 4 and 5 stores
+        pageId = pageId.$state || pageId.get();
+        console.log("Extracted page ID value from Svelte store");
+      } catch (err) {
+        console.log("Could not extract page ID from store:", err);
+      }
     }
     
     if (!canvas) {
       console.warn("Cannot save page: Canvas is not initialized");
       return false;
     }
+    
+    // Debug current state
+    console.log(`Save request for page: ${pageId}, document available: ${!!doc}, canvas objects: ${canvas.getObjects().length}`);
     
     if (!doc || !doc.pages) {
       console.error("Document or document.pages is null in saveCurrentPage");
@@ -53,7 +65,16 @@ export function createDocumentManagement(context) {
       if (window.$document && window.$document.pages && Array.isArray(window.$document.pages)) {
         console.log("Using window.$document as fallback", window.$document.id);
         doc = window.$document;
+      } else if (typeof currentDocument !== 'undefined' && currentDocument && typeof currentDocument.get === 'function') {
+        // Try to get document from the original source
+        try {
+          doc = currentDocument.get();
+          console.log("Recovered document from currentDocument");
+        } catch (err) {
+          console.error("Could not recover document from currentDocument:", err);
+        }
       } else {
+        console.error("No document sources available for recovery");
         return false;
       }
     }
@@ -122,7 +143,7 @@ export function createDocumentManagement(context) {
           const newPage = {
             id: pageId,
             canvasJSON: JSON.stringify({
-              "version": "4.6.0",
+              "version": "5.3.0",
               "objects": [],
               "background": "white"
             }),
@@ -173,7 +194,7 @@ export function createDocumentManagement(context) {
         
         // Create a minimal canvas representation
         const emptyCanvasJSON = JSON.stringify({
-          "version": "4.6.0",
+          "version": "5.3.0",
           "objects": [],
           "background": "white"
         });
@@ -279,7 +300,7 @@ export function createDocumentManagement(context) {
         
         // Create a direct JSON representation of the objects
         const directJSON = {
-          "version": "4.6.0",
+          "version": "5.3.0",
           "objects": initialCanvasObjects.map(obj => obj.toJSON([
             'id', 'linkedObjectIds', 'fromMaster', 'masterId', 'masterObjectId', 'overridable'
           ])),
@@ -428,7 +449,7 @@ export function createDocumentManagement(context) {
       // If no objects, save minimal state
       if (objects.length === 0) {
         const emptyCanvasJSON = JSON.stringify({
-          "version": "4.6.0",
+          "version": "5.3.0",
           "objects": [],
           "background": "white"
         });
@@ -468,7 +489,7 @@ export function createDocumentManagement(context) {
         backgroundColor: 'white',
         toJSON: function(propertiesToInclude) {
           return {
-            version: "4.6.0",
+            version: "5.3.0",
             objects: this._objects.map(obj => obj.toJSON(propertiesToInclude)),
             background: this.backgroundColor
           };
@@ -574,6 +595,121 @@ export function createDocumentManagement(context) {
         // Access canvas and document from context to ensure we have the latest values
         const canvas = context.canvas;
         const doc = context.get ? context.get('currentDocument') : context.currentDocument;
+        
+        // Check if we're switching between documents by comparing IDs
+        const currentDocId = doc?.id || null;
+        const previousDocId = window._previousDocumentId || null;
+        
+        if (currentDocId !== previousDocId && previousDocId !== null && currentDocId !== null) {
+          console.log(`LOAD WARNING: Document switch detected from ${previousDocId} to ${currentDocId}`);
+          console.log(`========== DOCUMENT SWITCH DETECTED ==========`);
+          
+          // Force a more thorough canvas clear for document switches
+          if (canvas) {
+            console.log("LOAD: Performing thorough multi-cycle canvas reset for document switch");
+            
+            // Temporarily disable all event handlers
+            try {
+              canvas.off();
+            } catch (err) {
+              console.warn("LOAD: Error removing event handlers:", err);
+            }
+            
+            // FIRST CYCLE - Clear canvas completely and reset internal state
+            console.log("DOCUMENT SWITCH: First cleaning cycle");
+            canvas.clear();
+            canvas.backgroundColor = 'white';
+            if (canvas._objects) canvas._objects = [];
+            if (canvas._objectsToRender) canvas._objectsToRender = [];
+            canvas.discardActiveObject();
+            canvas.__eventListeners = {};
+            
+            // Reset additional internal state that might persist
+            if (canvas._activeObject) canvas._activeObject = null;
+            if (canvas._hoveredTarget) canvas._hoveredTarget = null;
+            if (canvas._currentTransform) canvas._currentTransform = null;
+            
+            // Reset fabricjs-specific state if accessible
+            try {
+              if (typeof fabric !== 'undefined' && fabric.Canvas) {
+                fabric.Canvas.activeInstance = null;
+              }
+            } catch (err) {
+              console.warn("Could not reset fabricjs global state", err);
+            }
+            
+            // Clear ALL global variables that might contain document-specific state
+            window._canvasObjects = null;
+            window._previousPageBackup = null;
+            window.$emergencyBackup = null;
+            window._pageSaveTimeout && clearTimeout(window._pageSaveTimeout);
+            
+            // Force multiple renders to ensure clean state
+            canvas.requestRenderAll();
+            canvas.renderAll();
+            
+            // SECOND CYCLE - Extremely aggressive cleaning
+            setTimeout(() => {
+              console.log("DOCUMENT SWITCH: Second cleaning cycle");
+              
+              // Clear again to absolutely ensure a clean slate
+              canvas.clear();
+              canvas.backgroundColor = 'white';
+              
+              // Reset ALL canvas internal arrays with new empty arrays
+              canvas._objects = [];
+              if (canvas._objectsToRender) canvas._objectsToRender = [];
+              
+              // Reset selection state completely
+              if (typeof canvas.selection !== 'undefined') canvas.selection = false;
+              if (typeof canvas.isDrawingMode !== 'undefined') canvas.isDrawingMode = false;
+              canvas.discardActiveObject && canvas.discardActiveObject();
+              
+              // Force explicit reset of canvas dimensions to refresh rendering
+              const originalWidth = canvas.width;
+              const originalHeight = canvas.height;
+              canvas.setWidth(originalWidth);
+              canvas.setHeight(originalHeight);
+              
+              // Force strong rendering
+              canvas.requestRenderAll();
+              canvas.renderAll();
+              
+              console.log("LOAD: Secondary canvas cleanup completed");
+            }, 50);
+            
+            // THIRD CYCLE - Nuclear option cleanup
+            setTimeout(() => {
+              console.log("DOCUMENT SWITCH: Third cleaning cycle (nuclear option)");
+              
+              if (canvas) {
+                try {
+                  // One final hard reset
+                  canvas.clear();
+                  canvas.backgroundColor = 'white';
+                  canvas._objects = [];
+                  if (canvas._objectsToRender) canvas._objectsToRender = [];
+                  
+                  // Explicitly override any remaining internal state
+                  if (canvas._activeObject) canvas._activeObject = null;
+                  if (canvas._hoveredTarget) canvas._hoveredTarget = null;
+                  if (canvas._currentTransform) canvas._currentTransform = null;
+                  
+                  // Force renders
+                  canvas.requestRenderAll();
+                  canvas.renderAll();
+                } catch (err) {
+                  console.warn("Error during third cycle canvas cleanup:", err);
+                }
+              }
+            }, 100);
+            
+            // Update the tracked document ID
+            window._previousDocumentId = currentDocId;
+            console.log(`LOAD: Document switch cleanup complete, new ID: ${currentDocId}`);
+            console.log(`========== END DOCUMENT SWITCH HANDLING ==========`);
+          }
+        }
         
         // During initialization, we might not have a document or canvas yet - this is normal
         // Handle this gracefully instead of throwing an error
@@ -730,22 +866,66 @@ export function createDocumentManagement(context) {
               
               console.log(`Created ${createdObjects.length}/${objectCount} objects`);
               
-              // Add all created objects to the canvas
-              createdObjects.forEach(obj => {
-                // Set essential properties
-                obj.visible = true;
-                obj.evented = true;
-                obj.selectable = context.activeTool === 'select';
+              // Add all created objects to the canvas with proper timing
+              console.log("Adding objects to canvas and ensuring they are tracked correctly");
+              try {
+                // Adding objects one by one with validation
+                createdObjects.forEach(obj => {
+                  // Check if object is valid
+                  if (!obj) return;
+                  
+                  // Set essential properties
+                  obj.visible = true;
+                  obj.evented = true;
+                  obj.selectable = context.activeTool === 'select';
+                  
+                  // Make sure object has an ID
+                  if (!obj.id) {
+                    obj.id = context.generateId ? context.generateId() : `obj-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+                    console.log(`Added missing ID to object: ${obj.type}`);
+                  }
+                  
+                  // Different handling for master page objects
+                  if (obj.fromMaster) {
+                    obj.selectable = false;
+                    obj.hoverCursor = 'not-allowed';
+                  }
+                  
+                  // Add to canvas with validation
+                  try {
+                    canvas.add(obj);
+                    console.log(`Successfully added object of type ${obj.type} to canvas`);
+                  } catch (objError) {
+                    console.error(`Error adding object of type ${obj.type} to canvas:`, objError);
+                  }
+                });
                 
-                // Different handling for master page objects
-                if (obj.fromMaster) {
-                  obj.selectable = false;
-                  obj.hoverCursor = 'not-allowed';
+                // Set page ID on canvas for reference
+                canvas.pageId = pageId;
+                console.log(`Page ID ${pageId} set on canvas for reference`);
+                
+                // IMPORTANT: Save canvas state to the document right after loading
+                // This ensures the canvas objects are committed to the document
+                try {
+                  if (context.saveCurrentPage && typeof context.saveCurrentPage === 'function') {
+                    console.log(`Saving page ${pageId} immediately after loading to ensure persistence`);
+                    context.saveCurrentPage();
+                  } else if (context.saveSpecificPage && typeof context.saveSpecificPage === 'function') {
+                    console.log(`Saving page ${pageId} with saveSpecificPage after loading`);
+                    context.saveSpecificPage(pageId, canvas.getObjects());
+                  }
+                } catch (saveError) {
+                  console.error(`Error saving page ${pageId} after loading:`, saveError);
                 }
                 
-                // Add to canvas
-                canvas.add(obj);
-              });
+                // Notify canvas that objects have been loaded
+                if (typeof canvas.fire === 'function') {
+                  console.log("Firing object:loaded event to notify canvas of changes");
+                  canvas.fire('objects:loaded', { count: createdObjects.length });
+                }
+              } catch (addError) {
+                console.error("Error while adding objects:", addError);
+              }
               
               // Log what we've loaded
               const finalObjects = canvas.getObjects();
@@ -865,6 +1045,33 @@ export function createDocumentManagement(context) {
       // Use the storage utility to load the document directly from IndexedDB
       const document = await loadDocument(documentId);
       console.log(`Successfully loaded document directly from IndexedDB: ${documentId}`);
+      
+      // Store a global reference as a fallback for emergency recovery
+      if (document && typeof window !== 'undefined') {
+        window.$document = document;
+        console.log("Updated window.$document reference with fresh DB data");
+        
+        // If we have a document update function in global context, update it
+        if (window.$updateDocument && typeof window.$updateDocument === 'function') {
+          try {
+            window.$updateDocument(doc => document);
+            console.log("Updated document via window.$updateDocument");
+          } catch (updateErr) {
+            console.warn("Could not update via window.$updateDocument:", updateErr);
+          }
+        }
+        
+        // Try to update the store if available
+        if (context.currentDocument && typeof context.currentDocument.set === 'function') {
+          try {
+            context.currentDocument.set(document);
+            console.log("Updated document store with fresh DB data");
+          } catch (storeError) {
+            console.warn("Could not update document store:", storeError);
+          }
+        }
+      }
+      
       return document;
     } catch (err) {
       console.error(`Failed to load document directly from IndexedDB: ${documentId}`, err);
@@ -906,15 +1113,13 @@ export function createDocumentManagement(context) {
         
         switch (objType) {
           case 'textbox':
-            // Get the appropriate text object factory based on fabric version
-            const createTextObject = getTextObjectFactory();
-            
+            // Use the imported createTextObject function
             if (!createTextObject) {
-              console.error("ERROR: Could not obtain text object factory");
+              console.error("ERROR: Could not use createTextObject function");
               break;
             }
             
-            // Create text object with our factory function
+            // Create text object with the imported function
             fabricObj = createTextObject(objData.text || 'Text', {
               left: objData.left || 100,
               top: objData.top || 100,
@@ -1049,7 +1254,7 @@ export function createDocumentManagement(context) {
             break;
             
           case 'image':
-            // For images, we need a special approach with fabric.Image.fromURL
+            // For images, we would need to import and use Image.fromURL
             // Store this for special handling after creating other objects
             console.log("Image object detected, will handle separately");
             break;
@@ -1267,7 +1472,7 @@ export function createDocumentManagement(context) {
                     break;
                     
                   case 'line':
-                    fabricObj = new fabric.Line(
+                    fabricObj = new Line(
                       [objData.x1 || 0, objData.y1 || 0, objData.x2 || 50, objData.y2 || 50],
                       {
                         left: objData.left || 0,
@@ -1368,7 +1573,7 @@ export function createDocumentManagement(context) {
           break;
           
         case 'ellipse':
-          clone = new fabric.Ellipse({
+          clone = new Ellipse({
             left: masterObject.left,
             top: masterObject.top,
             rx: masterObject.rx,

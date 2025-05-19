@@ -1,59 +1,161 @@
 /**
- * Canvas.events.js
- * Manages event handling for the Canvas component
+ * CanvasEventService.js
+ * Centralized service for canvas event handling in PageStudio
+ * 
+ * This service handles all canvas event management including:
+ * - Mouse interactions (click, move, up, double click)
+ * - Object selection
+ * - Drawing operations
+ * - Keyboard shortcuts
+ * - Clipboard operations
  */
-
-import { ToolType } from '$lib/stores/toolbar';
-import { createTextObject, createShadow } from '$lib/utils/fabric-helpers';
 import { fabric } from 'fabric';
+import { get } from 'svelte/store';
+import { ToolType } from '$lib/stores/toolbar';
+import { createTextObject } from '$lib/utils/fabric-helpers';
+import canvasService from './CanvasService';
+import documentService from './DocumentService';
 
-/**
- * Create event handling functions for the Canvas component
- * @param {Object} context - Canvas context with shared references and methods
- * @returns {Object} Event handling functions
- */
-export function createEventHandlers(context) {
-  // We're using explicit imports from fabric package
-  console.log("Using modern fabric imports in Canvas.events.js");
+class CanvasEventService {
+  constructor() {
+    // Core properties
+    this.canvas = null;
+    this.dispatch = null;
+    this.imageInput = null;
+    this.textFlow = null;
+    this.initialized = false;
+    
+    // Event state
+    this.isDrawing = false;
+    this.drawingObject = null;
+    
+    // Event handlers with bound 'this' context
+    this.handleMouseDown = this.handleMouseDown.bind(this);
+    this.handleMouseMove = this.handleMouseMove.bind(this);
+    this.handleMouseUp = this.handleMouseUp.bind(this);
+    this.handleDoubleClick = this.handleDoubleClick.bind(this);
+    this.handleObjectSelected = this.handleObjectSelected.bind(this);
+    this.handleSelectionCleared = this.handleSelectionCleared.bind(this);
+    this.handleRightClick = this.handleRightClick.bind(this);
+    this.handleScroll = this.handleScroll.bind(this);
+    this.handleImageUpload = this.handleImageUpload.bind(this);
+    this.handleKeyboard = this.handleKeyboard.bind(this);
+    this.registerEventHandlers = this.registerEventHandlers.bind(this);
+    this.removeEventHandlers = this.removeEventHandlers.bind(this);
+    
+    // Tool-specific handlers
+    this.handleTextToolMouseDown = this.handleTextToolMouseDown.bind(this);
+    this.handleImageToolMouseDown = this.handleImageToolMouseDown.bind(this);
+    this.handleRectangleToolMouseDown = this.handleRectangleToolMouseDown.bind(this);
+    this.handleEllipseToolMouseDown = this.handleEllipseToolMouseDown.bind(this);
+    this.handleLineToolMouseDown = this.handleLineToolMouseDown.bind(this);
+    this.handleRectangleToolMouseMove = this.handleRectangleToolMouseMove.bind(this);
+    this.handleEllipseToolMouseMove = this.handleEllipseToolMouseMove.bind(this);
+    this.handleLineToolMouseMove = this.handleLineToolMouseMove.bind(this);
+    
+    // Core methods
+    this.initialize = this.initialize.bind(this);
+    this.cleanup = this.cleanup.bind(this);
+    this.setupContextMenu = this.setupContextMenu.bind(this);
+    this.updateTextFlow = this.updateTextFlow.bind(this);
+  }
+
+  /**
+   * Initialize the canvas event service
+   * @param {Object} options - Initialization options
+   * @returns {CanvasEventService} This service instance for chaining
+   */
+  initialize(options = {}) {
+    console.log('CanvasEventService: Initializing with options', options);
+    
+    // Extract required properties from options
+    this.canvas = options.canvas || null;
+    this.dispatch = options.dispatch || (() => {});
+    this.imageInput = options.imageInput || null;
+    this.textFlow = options.textFlow || null;
+    this.generateId = options.generateId || (() => `obj-${Date.now()}-${Math.floor(Math.random() * 1000)}`);
+    this.toolStore = options.toolStore || null;
+    this.toolOptionsStore = options.toolOptionsStore || null;
+    this.activeTool = options.activeTool || ToolType.SELECT;
+    this.currentToolOptions = options.currentToolOptions || {};
+    
+    // Context menu state setup
+    this.contextMenuState = {
+      showContextMenu: false,
+      contextMenuX: 0,
+      contextMenuY: 0,
+      contextMenuObject: null
+    };
+    
+    // Register handlers with the canvas
+    if (this.canvas) {
+      this.registerEventHandlers();
+    }
+    
+    // Store global reference for emergency access
+    if (typeof window !== 'undefined') {
+      window.$canvasEventService = this;
+    }
+    
+    this.initialized = true;
+    return this;
+  }
   
-  const {
-    canvas,
-    generateId,
-    saveCurrentPage,
-    textFlow,
-    updateTextFlow,
-    snapToGrid,
-    snapToGuides,
-    createSmartGuides
-  } = context;
-
-  // State variables
-  let isDrawing = false;
-  let drawingObject = null;
-
+  /**
+   * Set up context menu properties
+   * @param {Object} contextMenuOptions - Context menu configuration
+   */
+  setupContextMenu(contextMenuOptions) {
+    this.contextMenuState = {
+      ...this.contextMenuState,
+      ...contextMenuOptions
+    };
+  }
+  
+  /**
+   * Generate a unique ID for objects
+   * @returns {string} Unique ID
+   */
+  generateObjectId() {
+    return this.generateId ? this.generateId() : `obj-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+  }
+  
+  /**
+   * Update text flow when text content changes
+   * @param {Object} textObject - The text object to update
+   */
+  updateTextFlow(textObject) {
+    if (!textObject || !this.textFlow) return;
+    
+    // If the textbox has linked objects, update the text flow
+    if (textObject.linkedObjectIds && textObject.linkedObjectIds.length > 0) {
+      this.textFlow.updateTextFlow(textObject.id);
+      this.canvas.renderAll();
+    }
+  }
+  
   /**
    * Handle mouse down events on the canvas
    * @param {Object} options - Fabric.js event options
    */
-  function handleMouseDown(options) {
-    if (!canvas) {
+  handleMouseDown(options) {
+    if (!this.canvas) {
       console.error("No canvas available in handleMouseDown");
       return;
     }
     
     try {
-      const pointer = canvas.getPointer(options.e);
+      const pointer = this.canvas.getPointer(options.e);
       if (!pointer) {
         console.error("Could not get pointer position in handleMouseDown");
         return;
       }
       
-      // Get the current active tool directly from the context
-      // which will have the up-to-date value from the store
-      const currentActiveTool = context.activeTool;
+      // Get the current active tool 
+      const currentActiveTool = this.activeTool;
       
       console.log(`Mouse down at position: x=${pointer.x}, y=${pointer.y}, Active tool: ${currentActiveTool}`);
-      isDrawing = true;
+      this.isDrawing = true;
       
       // Call appropriate handler based on current tool
       switch (currentActiveTool) {
@@ -64,27 +166,27 @@ export function createEventHandlers(context) {
           
         case ToolType.TEXT:
           console.log("Text tool active - creating text object");
-          handleTextToolMouseDown(options, pointer);
+          this.handleTextToolMouseDown(options, pointer);
           break;
           
         case ToolType.IMAGE:
           console.log("Image tool active - opening file dialog");
-          handleImageToolMouseDown(options);
+          this.handleImageToolMouseDown(options);
           break;
           
         case ToolType.RECTANGLE:
           console.log("Rectangle tool active - creating rectangle object");
-          handleRectangleToolMouseDown(options, pointer);
+          this.handleRectangleToolMouseDown(options, pointer);
           break;
           
         case ToolType.ELLIPSE:
           console.log("Ellipse tool active - creating ellipse object");
-          handleEllipseToolMouseDown(options, pointer);
+          this.handleEllipseToolMouseDown(options, pointer);
           break;
           
         case ToolType.LINE:
           console.log("Line tool active - creating line object");
-          handleLineToolMouseDown(options, pointer);
+          this.handleLineToolMouseDown(options, pointer);
           break;
           
         default:
@@ -93,7 +195,7 @@ export function createEventHandlers(context) {
       }
     } catch (error) {
       console.error("Error in handleMouseDown:", error);
-      isDrawing = false;
+      this.isDrawing = false;
     }
   }
 
@@ -102,12 +204,12 @@ export function createEventHandlers(context) {
    * @param {Object} options - Fabric.js event options
    * @param {Object} pointer - Canvas pointer coordinates
    */
-  function handleTextToolMouseDown(options, pointer) {
+  handleTextToolMouseDown(options, pointer) {
     if (options.target) return;
     
     console.log("Text tool mouse down event triggered at", pointer.x, pointer.y);
         
-    const textOptions = context.currentToolOptions;
+    const textOptions = this.currentToolOptions;
     console.log("Creating text with options:", textOptions);
     
     try {
@@ -122,9 +224,9 @@ export function createEventHandlers(context) {
         width: 200,
         fill: '#000000',
         editable: true,
-        id: generateId(), // Add unique ID for text flow
-        linkedObjectIds: [], // Initialize linked objects array
-        objectCaching: true // Enable object caching for better performance
+        id: this.generateObjectId(),
+        linkedObjectIds: [],
+        objectCaching: true
       });
       
       if (!text) {
@@ -140,10 +242,10 @@ export function createEventHandlers(context) {
       text.selectable = true;
       text.evented = true;
       
-      canvas.add(text);
-      console.log("Text added to canvas. Canvas now has", canvas.getObjects().length, "objects");
+      this.canvas.add(text);
+      console.log("Text added to canvas. Canvas now has", this.canvas.getObjects().length, "objects");
       
-      canvas.setActiveObject(text);
+      this.canvas.setActiveObject(text);
       
       // Try to enter editing mode if supported
       if (typeof text.enterEditing === 'function') {
@@ -152,16 +254,16 @@ export function createEventHandlers(context) {
       }
       
       // Force canvas rendering
-      canvas.requestRenderAll();
-      canvas.renderAll();
+      this.canvas.requestRenderAll();
+      this.canvas.renderAll();
       
-      isDrawing = false;
+      this.isDrawing = false;
       
       // Add text to TextFlow manager
-      if (textFlow) {
+      if (this.textFlow) {
         // Hook up events when textboxes are linked
-        text.on('modified', () => updateTextFlow(text));
-        text.on('changed', () => updateTextFlow(text));
+        text.on('modified', () => this.updateTextFlow(text));
+        text.on('changed', () => this.updateTextFlow(text));
         console.log("Text flow events connected");
       }
     } catch (error) {
@@ -173,11 +275,11 @@ export function createEventHandlers(context) {
    * Handle Image tool mouse down
    * @param {Object} options - Fabric.js event options
    */
-  function handleImageToolMouseDown(options) {
+  handleImageToolMouseDown(options) {
     // Open file dialog when the canvas is clicked
-    if (context.imageInput && !options.target) {
-      context.imageInput.click();
-      isDrawing = false;
+    if (this.imageInput && !options.target) {
+      this.imageInput.click();
+      this.isDrawing = false;
     }
   }
 
@@ -186,11 +288,11 @@ export function createEventHandlers(context) {
    * @param {Object} options - Fabric.js event options
    * @param {Object} pointer - Canvas pointer coordinates
    */
-  function handleRectangleToolMouseDown(options, pointer) {
-    const rectOptions = context.currentToolOptions;
+  handleRectangleToolMouseDown(options, pointer) {
+    const rectOptions = this.currentToolOptions;
     
     try {
-      drawingObject = new fabric.Rect({
+      this.drawingObject = new fabric.Rect({
         left: pointer.x,
         top: pointer.y,
         width: 0,
@@ -201,20 +303,20 @@ export function createEventHandlers(context) {
         rx: rectOptions.cornerRadius || 0,
         ry: rectOptions.cornerRadius || 0,
         selectable: false,
-        evented: true  // Keep evented true for visibility
+        evented: true
       });
       
-      if (!drawingObject) {
+      if (!this.drawingObject) {
         console.error("ERROR: Failed to create rectangle object");
         return;
       }
       
-      canvas.add(drawingObject);
-      canvas.requestRenderAll();
-      console.log("Rectangle created:", drawingObject);
+      this.canvas.add(this.drawingObject);
+      this.canvas.requestRenderAll();
+      console.log("Rectangle created:", this.drawingObject);
     } catch (error) {
       console.error("ERROR: Error creating rectangle:", error);
-      drawingObject = null;
+      this.drawingObject = null;
     }
   }
 
@@ -223,11 +325,11 @@ export function createEventHandlers(context) {
    * @param {Object} options - Fabric.js event options
    * @param {Object} pointer - Canvas pointer coordinates
    */
-  function handleEllipseToolMouseDown(options, pointer) {
-    const ellipseOptions = context.currentToolOptions;
+  handleEllipseToolMouseDown(options, pointer) {
+    const ellipseOptions = this.currentToolOptions;
     
     try {
-      drawingObject = new fabric.Ellipse({
+      this.drawingObject = new fabric.Ellipse({
         left: pointer.x,
         top: pointer.y,
         rx: 0,
@@ -236,18 +338,18 @@ export function createEventHandlers(context) {
         stroke: ellipseOptions.stroke || '#000000',
         strokeWidth: ellipseOptions.strokeWidth || 1,
         selectable: false,
-        evented: true  // Keep evented true for visibility
+        evented: true
       });
       
-      if (!drawingObject) {
+      if (!this.drawingObject) {
         console.error("ERROR: Failed to create ellipse object");
         return;
       }
       
-      canvas.add(drawingObject);
+      this.canvas.add(this.drawingObject);
     } catch (error) {
       console.error("ERROR: Error creating ellipse:", error);
-      drawingObject = null;
+      this.drawingObject = null;
     }
   }
 
@@ -256,29 +358,29 @@ export function createEventHandlers(context) {
    * @param {Object} options - Fabric.js event options
    * @param {Object} pointer - Canvas pointer coordinates
    */
-  function handleLineToolMouseDown(options, pointer) {
-    const lineOptions = context.currentToolOptions;
+  handleLineToolMouseDown(options, pointer) {
+    const lineOptions = this.currentToolOptions;
     
     try {
-      drawingObject = new fabric.Line(
+      this.drawingObject = new fabric.Line(
         [pointer.x, pointer.y, pointer.x, pointer.y], 
         {
           stroke: lineOptions.stroke || '#000000',
           strokeWidth: lineOptions.strokeWidth || 1,
           selectable: false,
-          evented: true  // Keep evented true for visibility
+          evented: true
         }
       );
       
-      if (!drawingObject) {
+      if (!this.drawingObject) {
         console.error("ERROR: Failed to create line object");
         return;
       }
       
-      canvas.add(drawingObject);
+      this.canvas.add(this.drawingObject);
     } catch (error) {
       console.error("ERROR: Error creating line:", error);
-      drawingObject = null;
+      this.drawingObject = null;
     }
   }
 
@@ -286,41 +388,38 @@ export function createEventHandlers(context) {
    * Handle mouse move events on the canvas
    * @param {Object} options - Fabric.js event options
    */
-  function handleMouseMove(options) {
-    if (!isDrawing || !drawingObject) return;
-    if (!canvas) {
+  handleMouseMove(options) {
+    if (!this.isDrawing || !this.drawingObject) return;
+    if (!this.canvas) {
       console.error("No canvas available in handleMouseMove");
       return;
     }
     
     try {
-      const pointer = canvas.getPointer(options.e);
+      const pointer = this.canvas.getPointer(options.e);
       if (!pointer) {
         console.error("Could not get pointer position in handleMouseMove");
         return;
       }
       
-      // Get the current active tool from context to ensure it's up-to-date
-      const currentActiveTool = context.activeTool;
-      
       // Call appropriate handler based on current tool
-      switch (currentActiveTool) {
+      switch (this.activeTool) {
         case ToolType.RECTANGLE:
-          handleRectangleToolMouseMove(pointer);
+          this.handleRectangleToolMouseMove(pointer);
           break;
           
         case ToolType.ELLIPSE:
-          handleEllipseToolMouseMove(pointer);
+          this.handleEllipseToolMouseMove(pointer);
           break;
           
         case ToolType.LINE:
-          handleLineToolMouseMove(pointer);
+          this.handleLineToolMouseMove(pointer);
           break;
       }
       
       // Ensure the canvas is rendered
       try {
-        canvas.renderAll();
+        this.canvas.renderAll();
       } catch (renderError) {
         console.error("Error rendering canvas:", renderError);
       }
@@ -333,26 +432,26 @@ export function createEventHandlers(context) {
    * Handle Rectangle tool mouse move
    * @param {Object} pointer - Canvas pointer coordinates
    */
-  function handleRectangleToolMouseMove(pointer) {
-    if (!drawingObject || typeof drawingObject.set !== 'function') {
+  handleRectangleToolMouseMove(pointer) {
+    if (!this.drawingObject || typeof this.drawingObject.set !== 'function') {
       console.error("Invalid rectangle object in handleRectangleToolMouseMove");
       return;
     }
     
     try {
       // Update rectangle dimensions
-      const width = Math.abs(pointer.x - drawingObject.left);
-      const height = Math.abs(pointer.y - drawingObject.top);
+      const width = Math.abs(pointer.x - this.drawingObject.left);
+      const height = Math.abs(pointer.y - this.drawingObject.top);
       
       // Adjust position if drawing from bottom-right to top-left
-      if (pointer.x < drawingObject.left) {
-        drawingObject.set({ left: pointer.x });
+      if (pointer.x < this.drawingObject.left) {
+        this.drawingObject.set({ left: pointer.x });
       }
-      if (pointer.y < drawingObject.top) {
-        drawingObject.set({ top: pointer.y });
+      if (pointer.y < this.drawingObject.top) {
+        this.drawingObject.set({ top: pointer.y });
       }
       
-      drawingObject.set({
+      this.drawingObject.set({
         width: width,
         height: height
       });
@@ -365,22 +464,22 @@ export function createEventHandlers(context) {
    * Handle Ellipse tool mouse move
    * @param {Object} pointer - Canvas pointer coordinates
    */
-  function handleEllipseToolMouseMove(pointer) {
-    if (!drawingObject || typeof drawingObject.set !== 'function') {
+  handleEllipseToolMouseMove(pointer) {
+    if (!this.drawingObject || typeof this.drawingObject.set !== 'function') {
       console.error("Invalid ellipse object in handleEllipseToolMouseMove");
       return;
     }
     
     try {
       // Update ellipse dimensions
-      const rx = Math.abs(pointer.x - drawingObject.left) / 2;
-      const ry = Math.abs(pointer.y - drawingObject.top) / 2;
+      const rx = Math.abs(pointer.x - this.drawingObject.left) / 2;
+      const ry = Math.abs(pointer.y - this.drawingObject.top) / 2;
       
       // Adjust position to keep center of ellipse fixed
-      const centerX = Math.min(pointer.x, drawingObject.left) + rx;
-      const centerY = Math.min(pointer.y, drawingObject.top) + ry;
+      const centerX = Math.min(pointer.x, this.drawingObject.left) + rx;
+      const centerY = Math.min(pointer.y, this.drawingObject.top) + ry;
       
-      drawingObject.set({
+      this.drawingObject.set({
         rx: rx,
         ry: ry,
         left: centerX - rx,
@@ -395,10 +494,10 @@ export function createEventHandlers(context) {
    * Handle Line tool mouse move
    * @param {Object} pointer - Canvas pointer coordinates
    */
-  function handleLineToolMouseMove(pointer) {
+  handleLineToolMouseMove(pointer) {
     // Update line end point
-    if (drawingObject && typeof drawingObject.set === 'function') {
-      drawingObject.set({
+    if (this.drawingObject && typeof this.drawingObject.set === 'function') {
+      this.drawingObject.set({
         x2: pointer.x,
         y2: pointer.y
       });
@@ -410,55 +509,55 @@ export function createEventHandlers(context) {
   /**
    * Handle mouse up events on the canvas
    */
-  function handleMouseUp() {
-    isDrawing = false;
+  handleMouseUp() {
+    this.isDrawing = false;
     
-    if (!canvas) {
+    if (!this.canvas) {
       console.error("No canvas available in handleMouseUp");
       return;
     }
     
-    if (drawingObject) {
+    if (this.drawingObject) {
       try {
         // Make the drawn object properly set for interactivity
-        drawingObject.set({
-          selectable: context.activeTool === ToolType.SELECT, // Only selectable in SELECT mode
+        this.drawingObject.set({
+          selectable: this.activeTool === ToolType.SELECT, // Only selectable in SELECT mode
           evented: true, // Always evented to ensure visibility
-          hoverCursor: context.activeTool === ToolType.SELECT ? 'move' : 'default'
+          hoverCursor: this.activeTool === ToolType.SELECT ? 'move' : 'default'
         });
         
         // Clean up tiny objects (likely accidental clicks)
-        if (context.activeTool === ToolType.RECTANGLE || context.activeTool === ToolType.ELLIPSE) {
-          if ((drawingObject.width < 5 && drawingObject.height < 5) || 
-              (drawingObject.rx < 2.5 && drawingObject.ry < 2.5)) {
+        if (this.activeTool === ToolType.RECTANGLE || this.activeTool === ToolType.ELLIPSE) {
+          if ((this.drawingObject.width < 5 && this.drawingObject.height < 5) || 
+              (this.drawingObject.rx < 2.5 && this.drawingObject.ry < 2.5)) {
             console.log("Removing tiny shape object (likely accidental)");
-            canvas.remove(drawingObject);
+            this.canvas.remove(this.drawingObject);
           }
-        } else if (context.activeTool === ToolType.LINE) {
-          const dx = drawingObject.x2 - drawingObject.x1;
-          const dy = drawingObject.y2 - drawingObject.y1;
+        } else if (this.activeTool === ToolType.LINE) {
+          const dx = this.drawingObject.x2 - this.drawingObject.x1;
+          const dy = this.drawingObject.y2 - this.drawingObject.y1;
           const distance = Math.sqrt(dx * dx + dy * dy);
           
           if (distance < 5) {
             console.log("Removing tiny line object (likely accidental)");
-            canvas.remove(drawingObject);
+            this.canvas.remove(this.drawingObject);
           }
         }
         
         // Clear drawing object reference
-        drawingObject = null;
+        this.drawingObject = null;
         
         // Request a complete render cycle with error handling
         try {
           console.log("Requesting canvas render after mouse up");
-          canvas.requestRenderAll();
-          canvas.renderAll();
+          this.canvas.requestRenderAll();
+          this.canvas.renderAll();
         } catch (renderError) {
           console.error("Error rendering canvas after mouse up:", renderError);
         }
       } catch (error) {
         console.error("Error in handleMouseUp:", error);
-        drawingObject = null;
+        this.drawingObject = null;
       }
     }
   }
@@ -467,15 +566,14 @@ export function createEventHandlers(context) {
    * Handle double click events on the canvas
    * @param {Object} options - Fabric.js event options
    */
-  function handleDoubleClick(options) {
-    if (!canvas) return;
+  handleDoubleClick(options) {
+    if (!this.canvas) return;
     
     const target = options.target;
     
     // Handle double-clicking on text objects to enter edit mode
-    // Check for both textbox and text/itext types
     if (target && (target.type === 'textbox' || target.type === 'text' || target.type === 'i-text')) {
-      canvas.setActiveObject(target);
+      this.canvas.setActiveObject(target);
       
       // Make sure enterEditing exists before calling it
       if (typeof target.enterEditing === 'function') {
@@ -488,12 +586,14 @@ export function createEventHandlers(context) {
    * Handle object selection events
    * @param {Object} options - Fabric.js event options
    */
-  function handleObjectSelected(options) {
-    const activeObject = canvas.getActiveObject();
+  handleObjectSelected(options) {
+    if (!this.canvas) return;
+    
+    const activeObject = this.canvas.getActiveObject();
     
     // Make sure text objects have an ID for text flow
     if (activeObject && activeObject.type === 'textbox' && !activeObject.id) {
-      activeObject.id = generateId();
+      activeObject.id = this.generateObjectId();
       if (!activeObject.linkedObjectIds) {
         activeObject.linkedObjectIds = [];
       }
@@ -502,7 +602,7 @@ export function createEventHandlers(context) {
     // If the selected object is from a master page, pass that info
     const isMasterObject = activeObject && activeObject.fromMaster === true;
     
-    context.dispatch('objectselected', { 
+    this.dispatch('objectselected', { 
       object: activeObject, 
       objectType: activeObject?.type,
       fromMaster: isMasterObject,
@@ -510,42 +610,40 @@ export function createEventHandlers(context) {
       masterObjectId: isMasterObject ? activeObject.masterObjectId : null,
       overridable: isMasterObject ? activeObject.overridable : null
     });
-    
-    // Update selected object in context
-    context.selectedObject = activeObject;
   }
 
   /**
    * Handle selection cleared events
    */
-  function handleSelectionCleared() {
-    context.selectedObject = null;
-    context.dispatch('objectselected', { object: null, objectType: null });
+  handleSelectionCleared() {
+    this.dispatch('objectselected', { object: null, objectType: null });
   }
 
   /**
    * Handle right-click events on canvas objects
    * @param {Object} options - Fabric.js mouse event options
    */
-  function handleRightClick(options) {
+  handleRightClick(options) {
     options.e.preventDefault();
     
     if (options.target && options.target.fromMaster) {
       // Right-click on a master page object
-      context.contextMenuX = options.e.clientX;
-      context.contextMenuY = options.e.clientY;
-      context.contextMenuObject = options.target;
-      context.showContextMenu = true;
+      this.contextMenuState = {
+        contextMenuX: options.e.clientX,
+        contextMenuY: options.e.clientY,
+        contextMenuObject: options.target,
+        showContextMenu: true
+      };
       
       // Also dispatch event for external components
-      context.dispatch('masterObjectRightClick', {
+      this.dispatch('masterObjectRightClick', {
         object: options.target,
         x: options.e.clientX,
         y: options.e.clientY
       });
     } else {
       // Hide the context menu if clicking elsewhere
-      context.showContextMenu = false;
+      this.contextMenuState.showContextMenu = false;
     }
     
     return false;
@@ -553,11 +651,12 @@ export function createEventHandlers(context) {
 
   /**
    * Handle scroll events on the canvas container
+   * @param {Event} event - Scroll event
    */
-  function handleScroll() {
-    if (context.canvasContainer) {
-      context.canvasScrollX = context.canvasContainer.scrollLeft;
-      context.canvasScrollY = context.canvasContainer.scrollTop;
+  handleScroll(event) {
+    if (this.canvasContainer) {
+      this.canvasScrollX = this.canvasContainer.scrollLeft;
+      this.canvasScrollY = this.canvasContainer.scrollTop;
     }
   }
 
@@ -565,25 +664,25 @@ export function createEventHandlers(context) {
    * Handle image upload from file input
    * @param {Event} event - File input change event
    */
-  function handleImageUpload(event) {
+  handleImageUpload(event) {
     if (!event.target.files || !event.target.files[0]) return;
     
     const file = event.target.files[0];
     const reader = new FileReader();
     
-    reader.onload = function(e) {
+    reader.onload = (e) => {
       const imgSrc = e.target.result;
       
       // Create a temporary image to get dimensions
       const img = new Image();
-      img.onload = function() {
-        const imageOptions = context.currentToolOptions;
+      img.onload = () => {
+        const imageOptions = this.currentToolOptions;
         
         console.log("Image loaded, creating Fabric image object");
         
         // Create fabric image object with better error handling
         try {
-          fabric.Image.fromURL(imgSrc, function(fabricImg) {
+          fabric.Image.fromURL(imgSrc, (fabricImg) => {
             if (!fabricImg) {
               console.error("Failed to create Fabric image - null object returned");
               return;
@@ -599,14 +698,14 @@ export function createEventHandlers(context) {
             
             // Ensure required properties are set for visibility
             fabricImg.set({
-              left: (canvas.width - img.width * scale) / 2,
-              top: (canvas.height - img.height * scale) / 2,
+              left: (this.canvas.width - img.width * scale) / 2,
+              top: (this.canvas.height - img.height * scale) / 2,
               scaleX: scale,
               scaleY: scale,
               visible: true,
               evented: true,
               selectable: true,
-              id: generateId(),
+              id: this.generateObjectId(),
               opacity: 1
             });
             
@@ -621,28 +720,33 @@ export function createEventHandlers(context) {
             }
             
             console.log("Adding image to canvas");
-            canvas.add(fabricImg);
+            this.canvas.add(fabricImg);
             
             // Ensure object is still visible after adding
             fabricImg.visible = true;
             fabricImg.opacity = 1;
             
-            canvas.setActiveObject(fabricImg);
+            this.canvas.setActiveObject(fabricImg);
             
             // Ensure multiple renders to force visibility
-            canvas.requestRenderAll();
-            canvas.renderAll();
+            this.canvas.requestRenderAll();
+            this.canvas.renderAll();
             
             // Secondary render cycle
             setTimeout(() => {
               console.log("Secondary render cycle for image");
               fabricImg.visible = true;
-              canvas.requestRenderAll();
-              canvas.renderAll();
+              this.canvas.requestRenderAll();
+              this.canvas.renderAll();
             }, 100);
             
             // Reset file input for future uploads
             event.target.value = '';
+            
+            // Save current page after adding image
+            setTimeout(() => {
+              documentService.saveCurrentPage();
+            }, 500);
           });
         } catch (err) {
           console.error("Error creating image object:", err);
@@ -670,7 +774,7 @@ export function createEventHandlers(context) {
    * Handle keyboard events for the canvas
    * @param {KeyboardEvent} e - Keyboard event
    */
-  function handleKeyboard(e) {
+  handleKeyboard(e) {
     // Skip keyboard shortcuts if in a text input
     if (e.target.tagName === 'INPUT' || 
         e.target.tagName === 'TEXTAREA' || 
@@ -681,34 +785,34 @@ export function createEventHandlers(context) {
     if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
       // Ctrl+Z or Cmd+Z for Undo
       e.preventDefault();
-      context.undo();
+      canvasService.undo();
     } else if (
       ((e.ctrlKey || e.metaKey) && e.key === 'y') || 
       ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'z')
     ) {
       // Ctrl+Y or Cmd+Y or Ctrl+Shift+Z or Cmd+Shift+Z for Redo
       e.preventDefault();
-      context.redo();
+      canvasService.redo();
     } else if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
       // Ctrl+C or Cmd+C for Copy
-      if (canvas.getActiveObject()) {
+      if (this.canvas && this.canvas.getActiveObject()) {
         e.preventDefault();
-        context.copySelectedObjects();
+        canvasService.copySelectedObjects();
       }
     } else if ((e.ctrlKey || e.metaKey) && e.key === 'x') {
       // Ctrl+X or Cmd+X for Cut
-      if (canvas.getActiveObject()) {
+      if (this.canvas && this.canvas.getActiveObject()) {
         e.preventDefault();
-        context.cutSelectedObjects();
+        canvasService.cutSelectedObjects();
       }
     } else if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
       // Ctrl+V or Cmd+V for Paste
       e.preventDefault();
-      context.pasteObjects();
+      canvasService.pasteObjects();
     } else if (e.key === 'Delete' || e.key === 'Backspace') {
       // Delete selected objects
-      if (canvas.getActiveObject()) {
-        context.deleteSelectedObjects();
+      if (this.canvas && this.canvas.getActiveObject()) {
+        canvasService.deleteSelectedObjects();
       }
     }
   }
@@ -716,65 +820,50 @@ export function createEventHandlers(context) {
   /**
    * Register event handlers with the canvas
    */
-  function registerEventHandlers() {
-    if (!canvas) return;
+  registerEventHandlers() {
+    if (!this.canvas) {
+      console.error("CanvasEventService: Cannot register event handlers - No canvas available");
+      return;
+    }
     
     // First, remove any existing event handlers to avoid duplication
     try {
-      canvas.off('mouse:down');
-      canvas.off('mouse:move');
-      canvas.off('mouse:up');
-      canvas.off('mouse:dblclick');
-      canvas.off('selection:created');
-      canvas.off('selection:updated');
-      canvas.off('selection:cleared');
-      canvas.off('object:modified');
-      canvas.off('object:added');
-      canvas.off('object:removed');
+      this.removeEventHandlers();
     } catch (err) {
       console.warn("Error when cleaning up old event handlers:", err);
     }
     
-    console.log("Registering canvas event handlers");
+    console.log("CanvasEventService: Registering canvas event handlers");
     
     // Set up mouse event handlers
-    canvas.on('mouse:down', (options) => {
-      // Get the current active tool directly from context for accurate logging
-      const currentTool = context.activeTool;
-      
-      console.log(`Mouse down event detected. Active tool: ${currentTool}`, 
+    this.canvas.on('mouse:down', (options) => {
+      console.log(`Mouse down event detected. Active tool: ${this.activeTool}`, 
         options.pointer ? { x: options.pointer.x, y: options.pointer.y } : "No pointer data"
       );
       
       // Handle right-clicks separately
       if (options.e && options.e.button === 2) {
-        handleRightClick(options);
+        this.handleRightClick(options);
         return;
       }
       
       // Call the normal handler for non-right-clicks
-      handleMouseDown(options);
+      this.handleMouseDown(options);
     });
     
-    canvas.on('mouse:move', handleMouseMove);
-    canvas.on('mouse:up', handleMouseUp);
-    canvas.on('mouse:dblclick', handleDoubleClick);
-    canvas.on('selection:created', handleObjectSelected);
-    canvas.on('selection:updated', handleObjectSelected);
-    canvas.on('selection:cleared', handleSelectionCleared);
-    
-    // Listen for changes to update store with better debugging and error handling
-    // Import the document module functions for direct access
-    // We need this for safer saveCurrentPage access
-    const documentModule = context.documentManagement || {};
-    const saveCurrentPageDirectly = documentModule.saveCurrentPage || saveCurrentPage;
+    this.canvas.on('mouse:move', this.handleMouseMove);
+    this.canvas.on('mouse:up', this.handleMouseUp);
+    this.canvas.on('mouse:dblclick', this.handleDoubleClick);
+    this.canvas.on('selection:created', this.handleObjectSelected);
+    this.canvas.on('selection:updated', this.handleObjectSelected);
+    this.canvas.on('selection:cleared', this.handleSelectionCleared);
     
     // Register for objects:loaded event - custom event for page loading completion
-    canvas.on('objects:loaded', (options) => {
+    this.canvas.on('objects:loaded', (options) => {
       console.log(`Objects loaded event received - ${options.count} objects loaded`);
       
       // Make sure all objects are properly set up
-      canvas.getObjects().forEach(obj => {
+      this.canvas.getObjects().forEach(obj => {
         obj.visible = true;
         obj.opacity = obj.opacity === 0 ? 1 : obj.opacity;
       });
@@ -783,20 +872,14 @@ export function createEventHandlers(context) {
       setTimeout(() => {
         try {
           console.log("Triggering save after objects loaded event");
-          if (typeof saveCurrentPageDirectly === 'function') {
-            saveCurrentPageDirectly();
-          } else if (typeof saveCurrentPage === 'function') {
-            saveCurrentPage();
-          } else if (context && typeof context.saveCurrentPage === 'function') {
-            context.saveCurrentPage();
-          }
+          documentService.saveCurrentPage();
         } catch (err) {
           console.error("Error saving after objects loaded:", err);
         }
       }, 500);
     });
     
-    canvas.on('object:modified', (options) => {
+    this.canvas.on('object:modified', (options) => {
       console.log("Object modified:", options.target ? options.target.type : "unknown");
       try {
         // Ensure the modified object is visible
@@ -805,107 +888,113 @@ export function createEventHandlers(context) {
           options.target.opacity = options.target.opacity === 0 ? 1 : options.target.opacity;
         }
         
-        // Try all possible save methods
-        if (typeof saveCurrentPageDirectly === 'function') {
-          saveCurrentPageDirectly();
-        } else if (typeof saveCurrentPage === 'function') {
-          saveCurrentPage();
-        } else if (context && typeof context.saveCurrentPage === 'function') {
-          context.saveCurrentPage();
-        } else if (context && context.documentManagement && typeof context.documentManagement.saveCurrentPage === 'function') {
-          context.documentManagement.saveCurrentPage();
-        } else if (window.$debugCanvas && typeof window.$debugCanvas.forceSave === 'function') {
-          window.$debugCanvas.forceSave();
-        } else {
-          console.warn("saveCurrentPage function not available in object:modified event");
-        }
+        // Save the changes
+        documentService.saveCurrentPage();
       } catch (err) {
         console.error("Error in object:modified handler:", err);
       }
     });
     
-    canvas.on('object:added', (options) => {
+    this.canvas.on('object:added', (options) => {
       console.log("Object added:", options.target ? options.target.type : "unknown");
       try {
-        if (typeof saveCurrentPageDirectly === 'function') {
-          saveCurrentPageDirectly();
-        } else if (typeof saveCurrentPage === 'function') {
-          saveCurrentPage();
-        } else if (context && typeof context.saveCurrentPage === 'function') {
-          context.saveCurrentPage();
-        } else if (context && context.documentManagement && typeof context.documentManagement.saveCurrentPage === 'function') {
-          context.documentManagement.saveCurrentPage();
-        } else if (window.$debugCanvas && typeof window.$debugCanvas.forceSave === 'function') {
-          window.$debugCanvas.forceSave();
-        } else {
-          console.warn("saveCurrentPage function not available in object:added event");
-        }
+        documentService.saveCurrentPage();
       } catch (err) {
         console.error("Error in object:added handler:", err);
       }
     });
     
-    canvas.on('object:removed', (options) => {
+    this.canvas.on('object:removed', (options) => {
       console.log("Object removed:", options.target ? options.target.type : "unknown");
       try {
-        if (typeof saveCurrentPageDirectly === 'function') {
-          saveCurrentPageDirectly();
-        } else if (typeof saveCurrentPage === 'function') {
-          saveCurrentPage();
-        } else if (context && typeof context.saveCurrentPage === 'function') {
-          context.saveCurrentPage();
-        } else if (context && context.documentManagement && typeof context.documentManagement.saveCurrentPage === 'function') {
-          context.documentManagement.saveCurrentPage();
-        } else if (window.$debugCanvas && typeof window.$debugCanvas.forceSave === 'function') {
-          window.$debugCanvas.forceSave();
-        } else {
-          console.warn("saveCurrentPage function not available in object:removed event");
-        }
+        documentService.saveCurrentPage();
       } catch (err) {
         console.error("Error in object:removed handler:", err);
       }
     });
     
     // Add keyboard event listener
-    window.addEventListener('keydown', handleKeyboard);
+    window.addEventListener('keydown', this.handleKeyboard);
     
-    console.log("Canvas event handlers successfully registered");
+    console.log("CanvasEventService: Canvas event handlers successfully registered");
+    
+    return true;
   }
 
   /**
    * Remove event handlers from the canvas
    */
-  function removeEventHandlers() {
-    if (!canvas) return;
+  removeEventHandlers() {
+    if (!this.canvas) return;
     
-    canvas.off('mouse:down', handleMouseDown);
-    canvas.off('mouse:move', handleMouseMove);
-    canvas.off('mouse:up', handleMouseUp);
-    canvas.off('mouse:dblclick', handleDoubleClick);
-    canvas.off('selection:created', handleObjectSelected);
-    canvas.off('selection:updated', handleObjectSelected);
-    canvas.off('selection:cleared', handleSelectionCleared);
+    console.log("CanvasEventService: Removing event handlers");
     
-    window.removeEventListener('keydown', handleKeyboard);
+    // Remove all event handlers
+    this.canvas.off('mouse:down');
+    this.canvas.off('mouse:move');
+    this.canvas.off('mouse:up');
+    this.canvas.off('mouse:dblclick');
+    this.canvas.off('selection:created');
+    this.canvas.off('selection:updated');
+    this.canvas.off('selection:cleared');
+    this.canvas.off('object:modified');
+    this.canvas.off('object:added');
+    this.canvas.off('object:removed');
+    this.canvas.off('objects:loaded');
+    
+    // Remove keyboard event listener
+    window.removeEventListener('keydown', this.handleKeyboard);
+    
+    return true;
   }
 
-  // Return the event handler functions
-  return {
-    handleMouseDown,
-    handleMouseMove,
-    handleMouseUp,
-    handleDoubleClick,
-    handleObjectSelected,
-    handleSelectionCleared,
-    handleRightClick,
-    handleScroll,
-    handleImageUpload,
-    handleKeyboard,
-    registerEventHandlers,
-    removeEventHandlers,
+  /**
+   * Get the current draw state
+   * @returns {Object} Draw state with isDrawing and drawingObject
+   */
+  getDrawState() {
+    return {
+      isDrawing: this.isDrawing,
+      drawingObject: this.drawingObject
+    };
+  }
+
+  /**
+   * Update the active tool and tool options
+   * @param {Object} toolInfo - Tool information
+   */
+  updateToolState(toolInfo = {}) {
+    if (toolInfo.activeTool !== undefined) {
+      this.activeTool = toolInfo.activeTool;
+    }
     
-    // Getter for drawingObject and isDrawing state
-    getDrawingObject: () => drawingObject,
-    isDrawing: () => isDrawing
-  };
+    if (toolInfo.currentToolOptions !== undefined) {
+      this.currentToolOptions = toolInfo.currentToolOptions;
+    }
+  }
+
+  /**
+   * Clean up resources when component unmounts
+   */
+  cleanup() {
+    console.log('CanvasEventService: Cleaning up resources');
+    
+    // Remove event handlers
+    this.removeEventHandlers();
+    
+    // Clear references
+    this.canvas = null;
+    this.dispatch = null;
+    this.imageInput = null;
+    this.textFlow = null;
+    this.drawingObject = null;
+    this.isDrawing = false;
+    
+    return true;
+  }
 }
+
+// Create singleton instance
+const canvasEventService = new CanvasEventService();
+
+export default canvasEventService;

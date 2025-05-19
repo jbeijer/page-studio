@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { detectFabricVersion, getTextObjectFactory, createCanvas } from './fabric-helpers';
+import { getFabricVersion, createTextObject, createCanvas } from './fabric-helpers';
 
 // Mock the fabric module at import level
 vi.mock('fabric', () => {
@@ -20,18 +20,18 @@ vi.mock('fabric', () => {
 });
 
 describe('Fabric Helpers', () => {
-  describe('detectFabricVersion', () => {
-    it('should detect fabric version', () => {
+  describe('getFabricVersion', () => {
+    it('should get fabric version', () => {
       // Just test that it returns a string - we can't easily mock the actual version in tests
-      const version = detectFabricVersion();
+      const version = getFabricVersion();
       expect(typeof version).toBe('string');
     });
   });
 
-  describe('getTextObjectFactory', () => {
-    it('should return a text object factory function', () => {
-      const factory = getTextObjectFactory();
-      expect(typeof factory).toBe('function');
+  describe('createTextObject', () => {
+    it('should create a text object', () => {
+      const textObject = createTextObject('Test text', { left: 0, top: 0 });
+      expect(textObject).toBeDefined();
     });
   });
 

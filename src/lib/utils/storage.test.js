@@ -290,7 +290,7 @@ describe('Storage Utility', () => {
   });
   
   test('loadDocument should handle corrupted canvasJSON data', async () => {
-    // Create a result with corrupted data
+    // This test verifies our auto-repair functionality works when loading documents with invalid canvas data
     const documentWithCorruptedData = {
       ...mockDocument,
       created: mockDocument.created.toISOString(),
@@ -298,25 +298,25 @@ describe('Storage Utility', () => {
       pages: [
         { 
           id: 'page-1', 
-          canvasJSON: '{invalid json syntax}', 
+          canvasJSON: '{invalid json syntax}', // Intentionally corrupted JSON for testing repair
           masterPageId: null,
           overrides: {},
           guides: { horizontal: [], vertical: [] }
         },
         { 
           id: 'page-2', 
-          canvasJSON: '{ "not a fabric json": true }', 
+          canvasJSON: '{ "not a fabric json": true }', // Valid JSON but not valid Fabric.js format
           masterPageId: null,
           overrides: {},
           guides: { horizontal: [], vertical: [] }
         },
         { 
           id: 'page-3', 
-          canvasJSON: null, 
+          canvasJSON: null, // Null case should be handled gracefully
           masterPageId: null,
           overrides: {},
           guides: { horizontal: [], vertical: [] }
-        } // null should be handled gracefully
+        }
       ]
     };
     

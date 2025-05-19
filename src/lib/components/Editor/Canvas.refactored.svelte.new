@@ -1,0 +1,1008 @@
+<script>
+  import { onMount, onDestroy, createEventDispatcher } from 'svelte';
+  import { currentDocument, currentPage } from '$lib/stores/document';
+  import { activeTool, ToolType, currentToolOptions } from '$lib/stores/toolbar';
+  import { canvasReady, updateCanvasReadyStatus } from '$lib/stores/canvasReady';
+  import { clipboard } from '$lib/stores/editor';
+  import * as fabric from 'fabric';
+  import TextFlow from '$lib/utils/text-flow';
+  import HistoryManager from '$lib/utils/history-manager';
+  import { getFabricVersion } from '$lib/utils/fabric-helpers';
+  import MasterObjectContextMenu from './MasterObjectContextMenu.svelte';
+  import HorizontalRuler from './HorizontalRuler.svelte';
+  import VerticalRuler from './VerticalRuler.svelte';
+  import { 
+    createHorizontalGuide, 
+    createVerticalGuide, 
+    makeGuideDraggable,
+    deleteGuide,
+    loadGuides
+  } from './Canvas.guides.js';
+  
+  // Import centralized services
+  import { documentService, canvasService, masterPageService } from '$lib/services';
+  
+  // Make fabric available globally for other modules
+  if (typeof window !== 'undefined') {
+    window.fabric = fabric;
+    console.log("Fabric.js version loaded:", fabric.version || "unknown");
+  }
+  
+  // Import grid-utils only on client-side
+  let convertToPixels;
+  let snapToGridPoint;
+  
+  if (typeof window !== 'undefined') {
+    import('$lib/utils/grid-utils.js').then(module => {
+      convertToPixels = module.convertToPixels;
+      snapToGridPoint = module.snapToGrid;
+    });
+  }
+  
+  const dispatch = createEventDispatcher();
+  
+  // Props using the standard Svelte 4 syntax
+  export let width = 1240; // Default A4 @ 150 DPI: 210mm × 1.5 × 3.93701
+  export let height = 1754; // Default A4 @ 150 DPI: 297mm × 1.5 × 3.93701
+  
+  // Canvas element references
+  let canvasElement;
+  let canvas;
+  let canvasContainer;
+  let imageInput;
+  
+  // State variables
+  let isMounted = false;
+  let selectedObject = null;
+  let textFlow;
+  let historyManager;
+  let canUndo = false;
+  let canRedo = false;
+  
+  // Context menu state
+  let showContextMenu = false;
+  let contextMenuX = 0;
+  let contextMenuY = 0;
+  let contextMenuObject = null;
+  
+  // Grid and rulers state
+  let canvasScrollX = 0;
+  let canvasScrollY = 0;
+  let zoomLevel = 1;
+  
+  // Keep track of the previous page to avoid redundant operations
+  let previousPage = null;
+  
+  // Track document IDs to detect document switches
+  let previousDocumentId = null;
+  
+  // Show/hide rulers based on document settings
+  $: showRulers = $currentDocument?.metadata?.rulers?.enabled || false;
+  $: showHorizontalRuler = showRulers && ($currentDocument?.metadata?.rulers?.horizontalVisible || true);
+  $: showVerticalRuler = showRulers && ($currentDocument?.metadata?.rulers?.verticalVisible || true);
+  
+  // Calculate ruler positions
+  $: rulerWidth = width;
+  $: rulerHeight = height;
+  $: rulerOffset = 20; // Width/height of the rulers
+  
+  // Watch for grid changes
+  $: if (canvas && $currentDocument?.metadata?.grid) {
+    renderGrid();
+  }
+  
+  // Generate a unique ID for objects when needed
+  function generateId() {
+    return 'obj-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
+  }
+  
+  // Render grid function
+  function renderGrid() {
+    if (!canvas || !$currentDocument?.metadata?.grid) return;
+    
+    // Get grid settings from document
+    const gridSettings = $currentDocument.metadata.grid;
+    if (!gridSettings.enabled) return;
+    
+    // Clear any existing grid
+    const existingGrid = canvas.getObjects().filter(obj => obj.isGrid);
+    existingGrid.forEach(obj => canvas.remove(obj));
+    
+    // Get grid size in pixels
+    const gridSize = gridSettings.size;
+    if (!gridSize || gridSize <= 0) return;
+    
+    // Create grid lines
+    const gridColor = gridSettings.color || '#CCCCCC';
+    const gridOpacity = gridSettings.opacity || 0.5;
+    
+    // Calculate number of lines needed
+    const hLines = Math.ceil(height / gridSize);
+    const vLines = Math.ceil(width / gridSize);
+    
+    // Create horizontal grid lines
+    for (let i = 0; i <= hLines; i++) {
+      const line = new fabric.Line([0, i * gridSize, width, i * gridSize], {
+        stroke: gridColor,
+        strokeWidth: 1,
+        opacity: gridOpacity,
+        selectable: false,
+        evented: false,
+        isGrid: true
+      });
+      canvas.add(line);
+      line.moveTo(0); // Move to bottom (back)
+    }
+    
+    // Create vertical grid lines
+    for (let i = 0; i <= vLines; i++) {
+      const line = new fabric.Line([i * gridSize, 0, i * gridSize, height], {
+        stroke: gridColor,
+        strokeWidth: 1,
+        opacity: gridOpacity,
+        selectable: false,
+        evented: false,
+        isGrid: true
+      });
+      canvas.add(line);
+      line.moveTo(0); // Move to bottom (back)
+    }
+    
+    canvas.renderAll();
+  }
+
+  // Handle active tool changes
+  $: if (canvas && $activeTool) {
+    setupCanvasForTool($activeTool);
+    
+    // After changing tools, ensure all objects are properly rendered
+    setTimeout(() => {
+      canvas.requestRenderAll();
+      canvas.renderAll();
+    }, 0);
+    
+    console.log(`Active tool updated to: ${$activeTool}`);
+  }
+  
+  // Setup canvas for a specific tool
+  function setupCanvasForTool(toolType) {
+    if (!canvas) return;
+    
+    console.log(`Setting up canvas for tool: ${toolType}`);
+    
+    // Reset canvas drawing mode
+    canvas.isDrawingMode = false;
+    
+    // Enable/disable selection based on tool
+    canvas.selection = toolType === ToolType.SELECT;
+    
+    // Make objects selectable only with the select tool, but keep them visible and responsive
+    const canvasObjects = canvas.getObjects();
+    console.log(`Configuring ${canvasObjects.length} objects for tool: ${toolType}`);
+    
+    canvasObjects.forEach(obj => {
+      // Skip grid objects
+      if (obj.isGrid) return;
+      
+      // Master page objects have special handling
+      if (obj.fromMaster) {
+        obj.selectable = false; // Master objects are never directly selectable
+        obj.evented = true; // But they can receive events for context menu
+      } else {
+        // For the TEXT tool, make objects selectable for the double-click editing feature
+        obj.selectable = toolType === ToolType.SELECT || (toolType === ToolType.TEXT && obj.type === 'textbox');
+        obj.evented = true; // Keep evented true to ensure objects remain visible and can receive events
+        
+        // Only enable selection for the SELECT tool (and TEXT tool for text objects)
+        if (toolType === ToolType.SELECT) {
+          obj.hoverCursor = 'move'; // Default cursor for selectable objects
+        } else if (toolType === ToolType.TEXT && obj.type === 'textbox') {
+          obj.hoverCursor = 'text'; // Text cursor for text objects in TEXT mode
+        } else {
+          obj.hoverCursor = 'default'; // Change cursor for non-selectable objects
+        }
+      }
+      
+      // Ensure all objects are visible
+      obj.visible = true;
+      obj.opacity = obj.opacity === 0 ? 1 : obj.opacity;
+    });
+    
+    // Reset the cursor
+    canvas.defaultCursor = 'default';
+    
+    // Tool-specific setup
+    switch (toolType) {
+      case ToolType.TEXT:
+        console.log("Setting text cursor for TEXT tool");
+        canvas.defaultCursor = 'text';
+        
+        // Also set the wrapper element cursor if available
+        if (canvas.wrapperEl) {
+          canvas.wrapperEl.style.cursor = 'text';
+        }
+        break;
+      case ToolType.IMAGE:
+        console.log("Setting crosshair cursor for IMAGE tool");
+        canvas.defaultCursor = 'crosshair';
+        
+        // Also set the wrapper element cursor if available
+        if (canvas.wrapperEl) {
+          canvas.wrapperEl.style.cursor = 'crosshair';
+        }
+        break;
+      case ToolType.RECTANGLE:
+      case ToolType.ELLIPSE:
+      case ToolType.LINE:
+        console.log(`Setting crosshair cursor for ${toolType} tool`);
+        canvas.defaultCursor = 'crosshair';
+        
+        // Also set the wrapper element cursor if available
+        if (canvas.wrapperEl) {
+          canvas.wrapperEl.style.cursor = 'crosshair';
+        }
+        break;
+      case ToolType.SELECT:
+        // Also set the wrapper element cursor if available
+        if (canvas.wrapperEl) {
+          canvas.wrapperEl.style.cursor = 'default';
+        }
+        break;
+    }
+    
+    // Ensure full re-render of the canvas with all objects
+    canvas.requestRenderAll();
+    canvas.renderAll();
+    
+    // Make another render call after a short delay to ensure everything is visible
+    setTimeout(() => {
+      console.log("Performing delayed render for tool change");
+      canvas.requestRenderAll();
+      canvas.renderAll();
+    }, 100);
+    
+    console.log(`Canvas setup complete for tool: ${toolType}`);
+  }
+  
+  // Update text flow when text content changes
+  function updateTextFlow(textObject) {
+    if (!textObject || !textFlow) return;
+    
+    // If the textbox has linked objects, update the text flow
+    if (textObject.linkedObjectIds && textObject.linkedObjectIds.length > 0) {
+      textFlow.updateTextFlow(textObject.id);
+      canvas.renderAll();
+    }
+  }
+  
+  /**
+   * Handle context menu override action
+   */
+  function handleContextMenuOverride(event) {
+    const { object } = event.detail;
+    if (object && object.fromMaster && object.overridable) {
+      masterPageService.overrideMasterObject(object);
+    }
+  }
+  
+  /**
+   * Handle context menu edit master action
+   */
+  function handleContextMenuEditMaster(event) {
+    const { masterId } = event.detail;
+    if (masterId) {
+      dispatch('editMasterPage', { masterPageId: masterId });
+    }
+  }
+  
+  /**
+   * Handle mouse down events
+   */
+  function handleMouseDown(evt) {
+    const pointer = canvas.getPointer(evt.e);
+    const target = canvas.findTarget(evt.e);
+    
+    // Close context menu if open
+    if (showContextMenu) {
+      showContextMenu = false;
+    }
+    
+    // Right-click check for context menu
+    if (evt.e.button === 2) {
+      if (target && target.fromMaster) {
+        // Show context menu for master objects
+        contextMenuObject = target;
+        contextMenuX = evt.e.clientX;
+        contextMenuY = evt.e.clientY;
+        showContextMenu = true;
+        
+        // Prevent default context menu
+        evt.e.preventDefault();
+        return false;
+      }
+    }
+    
+    // Handle different tools
+    switch ($activeTool) {
+      case ToolType.TEXT:
+        if (!target) {
+          // Create text object using service
+          canvasService.createObject('textbox', {
+            left: pointer.x,
+            top: pointer.y,
+            fontSize: $currentToolOptions.fontSize || 16,
+            fontFamily: $currentToolOptions.fontFamily || 'Arial',
+            fill: $currentToolOptions.fill || '#000000',
+            width: 200,
+            text: 'Text'
+          });
+          
+          // Switch back to select tool
+          activeTool.set(ToolType.SELECT);
+        }
+        break;
+        
+      case ToolType.RECTANGLE:
+        if (!target) {
+          // Create rectangle using service
+          canvasService.createObject('rect', {
+            left: pointer.x,
+            top: pointer.y,
+            width: 100,
+            height: 100,
+            fill: $currentToolOptions.fill || '#cccccc',
+            stroke: $currentToolOptions.stroke || '#000000',
+            strokeWidth: $currentToolOptions.strokeWidth || 1
+          });
+          
+          // Switch back to select tool
+          activeTool.set(ToolType.SELECT);
+        }
+        break;
+        
+      case ToolType.ELLIPSE:
+        if (!target) {
+          // Create circle using service
+          canvasService.createObject('circle', {
+            left: pointer.x,
+            top: pointer.y,
+            radius: 50,
+            fill: $currentToolOptions.fill || '#cccccc',
+            stroke: $currentToolOptions.stroke || '#000000',
+            strokeWidth: $currentToolOptions.strokeWidth || 1
+          });
+          
+          // Switch back to select tool
+          activeTool.set(ToolType.SELECT);
+        }
+        break;
+        
+      case ToolType.LINE:
+        if (!target) {
+          // Create line using service
+          canvasService.createObject('line', {
+            points: [pointer.x, pointer.y, pointer.x + 100, pointer.y + 100],
+            stroke: $currentToolOptions.stroke || '#000000',
+            strokeWidth: $currentToolOptions.strokeWidth || 1
+          });
+          
+          // Switch back to select tool
+          activeTool.set(ToolType.SELECT);
+        }
+        break;
+        
+      case ToolType.IMAGE:
+        if (!target) {
+          // Open file dialog to upload image
+          if (imageInput) {
+            imageInput.click();
+          }
+        }
+        break;
+    }
+  }
+  
+  /**
+   * Handle double click events
+   */
+  function handleDoubleClick(evt) {
+    const target = canvas.findTarget(evt.e);
+    
+    if (target && target.type === 'textbox' && ($activeTool === ToolType.SELECT || $activeTool === ToolType.TEXT)) {
+      // Enter edit mode for text
+      canvas.setActiveObject(target);
+      target.enterEditing();
+      target.selectAll();
+    }
+  }
+  
+  /**
+   * Handle object selected events
+   */
+  function handleObjectSelected(evt) {
+    selectedObject = evt.selected ? evt.selected[0] : null;
+    
+    if (selectedObject) {
+      // Dispatch event with object type
+      dispatch('objectselected', { 
+        object: selectedObject,
+        objectType: selectedObject.type
+      });
+    }
+  }
+  
+  /**
+   * Handle selection cleared events
+   */
+  function handleSelectionCleared() {
+    selectedObject = null;
+    dispatch('objectselected', { object: null, objectType: null });
+  }
+  
+  /**
+   * Handle scroll events
+   */
+  function handleScroll(evt) {
+    const scrollContainer = evt.target;
+    canvasScrollX = scrollContainer.scrollLeft;
+    canvasScrollY = scrollContainer.scrollTop;
+  }
+  
+  /**
+   * Handle image upload
+   */
+  function handleImageUpload(evt) {
+    const file = evt.target.files[0];
+    
+    if (file) {
+      const reader = new FileReader();
+      
+      reader.onload = function(e) {
+        // Use canvasService to create image
+        canvasService.createObject('image', {
+          src: e.target.result,
+          left: 100,
+          top: 100
+        });
+      };
+      
+      reader.readAsDataURL(file);
+    }
+    
+    // Reset file input to allow selecting the same file again
+    evt.target.value = '';
+    
+    // Switch back to select tool
+    activeTool.set(ToolType.SELECT);
+  }
+  
+  /**
+   * Handle guide creation events
+   */
+  function handleCreateGuide(event) {
+    const { position, orientation } = event.detail;
+    
+    if (orientation === 'horizontal') {
+      createHorizontalGuide(canvas, position);
+    } else {
+      createVerticalGuide(canvas, position);
+    }
+    
+    // Update the document to save the guide
+    saveGuidesToDocument();
+  }
+  
+  /**
+   * Handle guide update events
+   */
+  function handleUpdateGuide(event) {
+    // Similar implementation to handleCreateGuide
+    handleCreateGuide(event);
+  }
+  
+  /**
+   * Handle guide deletion events
+   */
+  function handleDeleteGuide(event) {
+    const { id } = event.detail;
+    
+    if (id && canvas) {
+      const guideObj = canvas.getObjects().find(obj => obj.id === id && obj.guide);
+      if (guideObj) {
+        deleteGuide(canvas, guideObj);
+        
+        // Update the document to save the guide state
+        saveGuidesToDocument();
+      }
+    }
+  }
+  
+  /**
+   * Save guide positions to document
+   */
+  function saveGuidesToDocument() {
+    if (!canvas || !$currentDocument || !$currentPage) return;
+    
+    const guides = { 
+      horizontal: [], 
+      vertical: [] 
+    };
+    
+    // Collect all guides from canvas
+    canvas.getObjects().forEach(obj => {
+      if (obj.guide) {
+        if (obj.orientation === 'horizontal') {
+          guides.horizontal.push(obj.top);
+        } else {
+          guides.vertical.push(obj.left);
+        }
+      }
+    });
+    
+    // Update document
+    const pageIndex = $currentDocument.pages.findIndex(p => p.id === $currentPage);
+    if (pageIndex >= 0) {
+      const updatedPages = [...$currentDocument.pages];
+      updatedPages[pageIndex] = {
+        ...updatedPages[pageIndex],
+        guides
+      };
+      
+      currentDocument.update(doc => ({
+        ...doc,
+        pages: updatedPages
+      }));
+    }
+  }
+  
+  /**
+   * Refresh guides for the current page
+   */
+  function refreshGuides() {
+    loadGuides(canvas, $currentDocument, $currentPage);
+  }
+  
+  /**
+   * Register event handlers
+   */
+  function registerEventHandlers() {
+    if (!canvas) return;
+    
+    console.log('Registering canvas event handlers');
+    
+    // Canvas object events
+    canvas.on('mouse:down', handleMouseDown);
+    canvas.on('mouse:dblclick', handleDoubleClick);
+    canvas.on('selection:created', handleObjectSelected);
+    canvas.on('selection:updated', handleObjectSelected);
+    canvas.on('selection:cleared', handleSelectionCleared);
+    
+    // Object modification events
+    canvas.on('object:modified', () => {
+      // Save the current page after an object is modified
+      setTimeout(() => {
+        documentService.saveCurrentPage();
+      }, 100);
+    });
+    
+    // Object addition/removal events
+    canvas.on('object:added', () => {
+      setTimeout(() => {
+        documentService.saveCurrentPage();
+      }, 100);
+    });
+    
+    canvas.on('object:removed', () => {
+      setTimeout(() => {
+        documentService.saveCurrentPage();
+      }, 100);
+    });
+    
+    // Right-click for context menu
+    canvas.on('contextmenu', evt => {
+      const target = canvas.findTarget(evt.e);
+      
+      // If we have a master object, show context menu
+      if (target && target.fromMaster) {
+        contextMenuObject = target;
+        contextMenuX = evt.e.clientX;
+        contextMenuY = evt.e.clientY;
+        showContextMenu = true;
+        
+        // Prevent default context menu
+        evt.e.preventDefault();
+      }
+    });
+  }
+  
+  /**
+   * Remove event handlers
+   */
+  function removeEventHandlers() {
+    if (!canvas) return;
+    
+    // Remove all event listeners
+    canvas.off('mouse:down');
+    canvas.off('mouse:dblclick');
+    canvas.off('selection:created');
+    canvas.off('selection:updated');
+    canvas.off('selection:cleared');
+    canvas.off('object:modified');
+    canvas.off('object:added');
+    canvas.off('object:removed');
+    canvas.off('contextmenu');
+  }
+  
+  // Subscribe to current page changes
+  $: if ($currentPage && canvas && $currentPage !== previousPage) {
+    console.log(`Page switch: ${previousPage || 'null'} -> ${$currentPage}`);
+    
+    // Only save the previous page if we had one
+    if (previousPage) {
+      console.log(`Saving previous page ${previousPage} before switching`);
+      documentService.saveCurrentPage();
+    }
+    
+    // Update tracking variables
+    previousPage = $currentPage;
+    
+    // Clear the canvas to prepare for new page
+    canvas.clear();
+    canvas.backgroundColor = 'white';
+    canvas.renderAll();
+    
+    // Load the new page
+    documentService.switchToPage($currentPage);
+  }
+  
+  /**
+   * Initialize the canvas
+   */
+  onMount(() => {
+    isMounted = true;
+    
+    // Log fabric.js version info
+    console.log("Fabric version detected:", getFabricVersion());
+    
+    try {
+      console.log("Starting canvas initialization...");
+      
+      // Make sure the DOM element exists before initializing
+      if (!canvasElement) {
+        throw new Error("Canvas DOM element not found");
+      }
+      
+      // Initialize canvas using the canvasService
+      canvas = canvasService.createCanvas(canvasElement, {
+        width,
+        height,
+        selection: true,
+        preserveObjectStacking: true,
+        backgroundColor: 'white'
+      });
+      
+      // Update services with canvas reference
+      documentService.initialize(canvas);
+      masterPageService.initialize(canvas);
+      
+      // Make global references available
+      window.$canvas = canvas;
+      window.$documentService = documentService;
+      window.$canvasService = canvasService;
+      window.$masterPageService = masterPageService;
+      
+      // Add our standard event handlers
+      registerEventHandlers();
+      
+      // Initialize text flow manager
+      textFlow = new TextFlow(canvas);
+      
+      // Initialize history manager
+      historyManager = new HistoryManager(canvas, {
+        onChange: (state) => {
+          canUndo = state.canUndo;
+          canRedo = state.canRedo;
+          
+          // Dispatch event for Toolbar to listen
+          dispatch('historyChange', { canUndo, canRedo });
+          
+          // Create a custom event for other components
+          const historyEvent = new CustomEvent('historyChange', {
+            detail: { canUndo, canRedo },
+            bubbles: true
+          });
+          document.dispatchEvent(historyEvent);
+        }
+      });
+      
+      // Setup canvas for initial tool
+      setupCanvasForTool($activeTool);
+      
+      // Initialize guides for current page
+      refreshGuides();
+      
+      // Update canvas ready status
+      updateCanvasReadyStatus({
+        hasCanvas: true,
+        hasDocument: !!$currentDocument,
+        hasPage: !!$currentPage,
+        isFullyInitialized: true,
+        hasActiveObjects: canvas.getObjects().length > 0,
+        hasError: false,
+        errorMessage: null
+      });
+      
+      console.log("Canvas initialized successfully");
+    } catch (error) {
+      console.error("Canvas initialization failed:", error);
+      
+      // Update error status
+      updateCanvasReadyStatus({
+        hasCanvas: false,
+        hasError: true,
+        errorMessage: `Canvas initialization failed: ${error.message}`
+      });
+    }
+    
+    // Return cleanup function
+    return () => {
+      console.log("Canvas component unmounting, cleaning up resources");
+      
+      // Clean up event handlers
+      removeEventHandlers();
+      
+      // Clean up history manager
+      if (historyManager) {
+        historyManager.dispose();
+      }
+      
+      // Clean up services
+      documentService.cleanup();
+      canvasService.cleanup();
+      masterPageService.cleanup();
+    };
+  });
+  
+  // Export functions to make them available to parent components
+  export const getCanvas = () => canvas;
+  export const getSelectedObject = () => selectedObject;
+  export const getTextFlow = () => textFlow;
+  
+  // Export direct actions to parent components
+  export const bringForward = () => canvasService.bringForward();
+  export const sendBackward = () => canvasService.sendBackward();
+  export const bringToFront = () => canvasService.bringToFront();
+  export const sendToBack = () => canvasService.sendToBack();
+  export const deleteSelectedObjects = () => canvasService.deleteSelectedObjects();
+  export const copySelectedObjects = () => canvasService.copySelectedObjects();
+  export const cutSelectedObjects = () => {
+    canvasService.copySelectedObjects();
+    canvasService.deleteSelectedObjects();
+  };
+  export const pasteObjects = () => canvasService.pasteObjects();
+  export const undo = () => historyManager?.canUndo() ? historyManager.undo() : null;
+  export const redo = () => historyManager?.canRedo() ? historyManager.redo() : null;
+  export const overrideMasterObject = (obj) => masterPageService.overrideMasterObject(obj);
+  export const saveCurrentPage = () => documentService.saveCurrentPage();
+  export const saveSpecificPage = (pageId, objects) => documentService.saveSpecificPage(pageId, objects);
+  export const isCanvasReadyForAutoOps = () => !!canvas && !!$currentDocument && !!$currentPage;
+  
+  // Export the reset canvas function
+  export const resetCanvas = () => canvasService.resetCanvas();
+  
+  /**
+   * Recovery function to create objects from JSON
+   */
+  export const recoverObjectsFromJson = (pageJson) => {
+    if (!canvas) return 0;
+    
+    try {
+      console.log("Attempting to recover objects from JSON");
+      
+      // Parse the JSON data
+      const jsonData = typeof pageJson === 'string' ? JSON.parse(pageJson) : pageJson;
+      const objectCount = jsonData.objects ? jsonData.objects.length : 0;
+      
+      if (objectCount === 0) {
+        console.log("No objects in JSON to recover");
+        return 0;
+      }
+      
+      console.log(`Attempting to recreate ${objectCount} objects from JSON`);
+      
+      // Clear the canvas first
+      canvas.clear();
+      canvas.backgroundColor = jsonData.background || 'white';
+      canvas.renderAll();
+      
+      // Create objects from JSON
+      let createdCount = 0;
+      
+      jsonData.objects.forEach(objData => {
+        try {
+          // Skip objects without a type
+          if (!objData.type) return;
+          
+          // Use canvasService to create each type of object
+          switch (objData.type.toLowerCase()) {
+            case 'rect':
+              canvasService.createObject('rect', objData);
+              createdCount++;
+              break;
+              
+            case 'circle':
+              canvasService.createObject('circle', objData);
+              createdCount++;
+              break;
+              
+            case 'textbox':
+              canvasService.createObject('textbox', {
+                ...objData,
+                text: objData.text || 'Text'
+              });
+              createdCount++;
+              break;
+              
+            case 'line':
+              canvasService.createObject('line', {
+                ...objData,
+                points: objData.points || [0, 0, 100, 100]
+              });
+              createdCount++;
+              break;
+              
+            case 'image':
+              // Images need special handling due to async loading
+              if (objData.src) {
+                fabric.Image.fromURL(objData.src, (img) => {
+                  // Apply all properties
+                  img.set(objData);
+                  
+                  // Add to canvas
+                  canvas.add(img);
+                  canvas.renderAll();
+                  
+                  // Save after image is loaded
+                  setTimeout(() => {
+                    documentService.saveCurrentPage();
+                  }, 100);
+                }, { crossOrigin: 'anonymous' });
+                
+                createdCount++;
+              }
+              break;
+          }
+        } catch (objErr) {
+          console.error(`Error creating object: ${objErr.message}`);
+        }
+      });
+      
+      // Render after creation
+      canvas.requestRenderAll();
+      canvas.renderAll();
+      
+      // Force another render after a delay
+      setTimeout(() => {
+        canvas.requestRenderAll();
+        canvas.renderAll();
+      }, 100);
+      
+      console.log(`Successfully recreated ${createdCount}/${objectCount} objects`);
+      return createdCount;
+    } catch (err) {
+      console.error("Failed to recover objects:", err);
+      return 0;
+    }
+  };
+</script>
+
+<div class="canvas-wrapper relative overflow-hidden">
+  <!-- Ruler corner square where rulers meet -->
+  {#if showRulers}
+    <div class="ruler-corner" style="width: {rulerOffset}px; height: {rulerOffset}px; z-index: 2;"></div>
+  {/if}
+  
+  <!-- Horizontal ruler -->
+  {#if showHorizontalRuler}
+    <div class="horizontal-ruler-container" style="left: {showVerticalRuler ? rulerOffset : 0}px; right: 0; top: 0; height: {rulerOffset}px; z-index: 1;">
+      <HorizontalRuler 
+        width={width} 
+        offsetX={canvasScrollX} 
+        scale={zoomLevel}
+        on:createGuide={handleCreateGuide}
+        on:updateGuide={handleUpdateGuide}
+        on:deleteGuide={handleDeleteGuide}
+      />
+    </div>
+  {/if}
+  
+  <!-- Vertical ruler -->
+  {#if showVerticalRuler}
+    <div class="vertical-ruler-container" style="top: {showHorizontalRuler ? rulerOffset : 0}px; bottom: 0; left: 0; width: {rulerOffset}px; z-index: 1;">
+      <VerticalRuler 
+        height={height} 
+        offsetY={canvasScrollY} 
+        scale={zoomLevel} 
+        on:createGuide={handleCreateGuide}
+        on:updateGuide={handleUpdateGuide}
+        on:deleteGuide={handleDeleteGuide}
+      />
+    </div>
+  {/if}
+  
+  <!-- Canvas container -->
+  <div 
+    class="canvas-container flex items-center justify-center p-8"
+    bind:this={canvasContainer}
+    on:scroll={handleScroll}
+    style="left: {showVerticalRuler ? rulerOffset : 0}px; top: {showHorizontalRuler ? rulerOffset : 0}px; right: 0; bottom: 0; position: absolute;"
+  >
+    <div class="canvas-paper shadow-lg">
+      <canvas 
+        bind:this={canvasElement} 
+        width={width} 
+        height={height}
+        class="border border-gray-300"
+        data-testid="editor-canvas"
+      ></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- Master object context menu -->
+<MasterObjectContextMenu 
+  visible={showContextMenu}
+  x={contextMenuX}
+  y={contextMenuY}
+  object={contextMenuObject}
+  on:override={handleContextMenuOverride}
+  on:editMaster={handleContextMenuEditMaster}
+/>
+
+<!-- Hidden file input for image tool -->
+<input 
+  type="file" 
+  bind:this={imageInput}
+  accept="image/*" 
+  style="display: none;" 
+  on:change={handleImageUpload}
+  data-testid="image-upload"
+/>
+
+<style>
+  .canvas-wrapper {
+    width: 100%;
+    height: 100%;
+    position: relative;
+  }
+  
+  .canvas-container {
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    background-color: theme('colors.canvas.background');
+  }
+  
+  .canvas-paper {
+    display: inline-block;
+  }
+  
+  .ruler-corner {
+    position: absolute;
+    top: 0;
+    left: 0;
+    background-color: #e0e0e0;
+    border-right: 1px solid #ccc;
+    border-bottom: 1px solid #ccc;
+  }
+  
+  .horizontal-ruler-container {
+    position: absolute;
+    overflow: hidden;
+  }
+  
+  .vertical-ruler-container {
+    position: absolute;
+    overflow: hidden;
+  }
+</style>

@@ -1,52 +1,39 @@
 /**
  * Fabric.js Helper Utilities
- * Provides compatibility functions for working with different versions of fabric.js
+ * Utilities for working with Fabric.js 5.x
  */
-import * as fabricModule from 'fabric';
-
-// Handle different module export patterns
-const fabric = fabricModule.fabric || fabricModule.default || fabricModule;
+import { fabric } from 'fabric';
 
 /**
- * Detect which version of fabric.js is being used
- * @returns {string} A string representing the version range ("5.x" or "6.x")
+ * Get the current Fabric.js version
+ * @returns {string} The Fabric.js version
  */
-export function detectFabricVersion() {
-  if (!fabric) return "unknown";
-  
-  // Fabric 6.x will have specific features
-  const isV6 = typeof fabric.version === 'string' && fabric.version.startsWith('6');
-  
-  // Default to 5.x
-  return isV6 ? "6.x" : "5.x";
+export function getFabricVersion() {
+  return fabric.version || '5.x';
 }
 
 /**
- * Get text object factory based on current fabric version
- * @returns {Function} A function that can create text objects
+ * Create a text object using the most appropriate Fabric.js text class
+ * @param {string} text - The text content
+ * @param {Object} options - Text object options
+ * @returns {Object} A Fabric.js text object
  */
-export function getTextObjectFactory() {
-  // Check what text classes are available
-  const hasTextbox = !!fabric.Textbox;
-  const hasIText = !!fabric.IText;
-  const hasText = !!fabric.Text;
-  
-  console.log("Fabric helper: Available text classes:", {
-    Textbox: hasTextbox,
-    IText: hasIText,
-    Text: hasText
-  });
-  
-  // Choose the best available text class
-  if (hasTextbox) {
-    return (text, options) => new fabric.Textbox(text, options);
-  } else if (hasIText) {
-    return (text, options) => new fabric.IText(text, options);
-  } else if (hasText) {
-    return (text, options) => new fabric.Text(text, options);
-  } else {
-    console.error("ERROR: No suitable text class found in fabric.js");
-    return null;
+export function createTextObject(text, options) {
+  try {
+    // Prefer Textbox for editable, multi-line text with wrapping
+    return new fabric.Textbox(text, options);
+  } catch (error) {
+    console.warn("Error creating Textbox, falling back to IText:", error.message);
+    
+    try {
+      // IText for interactive, editable text
+      return new fabric.IText(text, options);
+    } catch (error) {
+      console.warn("Error creating IText, falling back to basic Text:", error.message);
+      
+      // Basic Text as last resort
+      return new fabric.Text(text, options);
+    }
   }
 }
 
@@ -56,28 +43,72 @@ export function getTextObjectFactory() {
  * @param {Object} options - Canvas options
  * @returns {Object} The fabric Canvas instance
  */
-export function createCanvas(element, options) {
+export function createCanvas(element, options = {}) {
   try {
-    return new fabric.Canvas(element, options);
+    // For rendering optimization, set objectCaching by default
+    const defaultOptions = { 
+      objectCaching: true,
+      enableRetinaScaling: true,
+      renderOnAddRemove: false, // Better performance with manual rendering
+      ...options
+    };
+    
+    return new fabric.Canvas(element, defaultOptions);
   } catch (error) {
     console.error("Failed to create Canvas:", error);
     
-    // Try alternative initialization
-    const version = detectFabricVersion();
-    console.log("Attempting alternative canvas initialization for fabric version", version);
-    
-    // Try initialize with StaticCanvas as fallback
-    if (fabric.StaticCanvas) {
-      console.log("Using StaticCanvas as fallback");
-      return new fabric.StaticCanvas(element, options);
-    }
-    
-    throw error;
+    // Try StaticCanvas as fallback for non-interactive canvases
+    console.warn("Attempting to create StaticCanvas as fallback");
+    return new fabric.StaticCanvas(element, options);
   }
 }
 
+/**
+ * Create a shadow object
+ * @param {Object} options - Shadow options
+ * @returns {Object} A Fabric.js Shadow object
+ */
+export function createShadow(options) {
+  return new fabric.Shadow(options);
+}
+
+/**
+ * Set viewport transform with proper coordinates
+ * @param {Object} canvas - The Fabric.js canvas instance
+ * @param {number} zoom - Zoom level
+ * @param {number} panX - Pan X position
+ * @param {number} panY - Pan Y position
+ */
+export function setViewportTransform(canvas, zoom, panX, panY) {
+  canvas.setViewportTransform([zoom, 0, 0, zoom, panX, panY]);
+}
+
+/**
+ * Find the scale to fit content in a container
+ * @param {Object} objectSize - The object dimensions {width, height}
+ * @param {Object} containerSize - The container dimensions {width, height}
+ * @returns {number} The scale factor to fit the object in the container
+ */
+export function findScaleToFit(objectSize, containerSize) {
+  return fabric.util.findScaleToFit(objectSize, containerSize);
+}
+
+/**
+ * Transform a point using a transformation matrix
+ * @param {Object} point - The point to transform {x, y}
+ * @param {Array} transformMatrix - The transformation matrix
+ * @returns {Object} The transformed point {x, y}
+ */
+export function transformPoint(point, transformMatrix) {
+  return fabric.util.transformPoint(point, transformMatrix);
+}
+
 export default {
-  detectFabricVersion,
-  getTextObjectFactory,
-  createCanvas
+  getFabricVersion,
+  createTextObject,
+  createCanvas,
+  createShadow,
+  setViewportTransform,
+  findScaleToFit,
+  transformPoint
 };

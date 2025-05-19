@@ -2,6 +2,7 @@
   import { onMount, createEventDispatcher } from 'svelte';
   import { currentDocument, currentPage } from '$lib/stores/document';
   import * as documentStore from '$lib/stores/document';
+  import masterPageService from '$lib/services/MasterPageService';
   
   const dispatch = createEventDispatcher();
   
@@ -26,16 +27,26 @@
   function applyToCurrentPage(masterPageId) {
     if (!masterPageId || !$currentPage) return;
     
-    documentStore.applyMasterPage(masterPageId, [$currentPage]);
+    // Initialize service with canvas if available
+    if (canvasInstance) {
+      masterPageService.initialize(canvasInstance);
+    }
+    
+    // Apply master page using the service
+    masterPageService.applyMasterPage($currentPage, masterPageId);
     dispatch('masterPageApplied', { masterPageId, pageId: $currentPage });
   }
   
   // Apply a master page to all pages
-  function applyToAllPages(masterPageId) {
+  async function applyToAllPages(masterPageId) {
     if (!masterPageId || !$currentDocument) return;
     
+    // Apply to each page
+    for (const page of $currentDocument.pages) {
+      await masterPageService.applyMasterPage(page.id, masterPageId);
+    }
+    
     const pageIds = $currentDocument.pages.map(page => page.id);
-    documentStore.applyMasterPage(masterPageId, pageIds);
     dispatch('masterPageApplied', { masterPageId, pageIds });
   }
   
@@ -79,7 +90,13 @@
     
     const confirmed = confirm('Are you sure you want to delete this master page? This action cannot be undone.');
     if (confirmed) {
-      documentStore.removeMasterPage(masterPageId, true);
+      // Initialize service with canvas if available
+      if (canvasInstance) {
+        masterPageService.initialize(canvasInstance);
+      }
+      
+      // Delete the master page using the service
+      masterPageService.deleteMasterPage(masterPageId);
       
       if (selectedMasterPageId === masterPageId) {
         selectedMasterPageId = null;
@@ -93,9 +110,15 @@
   function saveMasterPage() {
     if (!newMasterPageName) return;
     
+    // Initialize service with canvas if available
+    if (canvasInstance) {
+      masterPageService.initialize(canvasInstance);
+    }
+    
     if (dialogMode === 'create') {
-      const newId = documentStore.createMasterPage({
-        name: newMasterPageName,
+      // Create a new master page using the service
+      const newId = masterPageService.createMasterPage({
+        title: newMasterPageName,
         description: newMasterPageDescription,
         basedOn: newMasterPageBasedOn
       });
@@ -103,8 +126,9 @@
       selectedMasterPageId = newId;
       dispatch('masterPageCreated', { masterPageId: newId });
     } else {
-      documentStore.updateMasterPage(selectedMasterPageId, {
-        name: newMasterPageName,
+      // Update an existing master page using the service
+      masterPageService.updateMasterPage(selectedMasterPageId, {
+        title: newMasterPageName,
         description: newMasterPageDescription,
         basedOn: newMasterPageBasedOn
       });

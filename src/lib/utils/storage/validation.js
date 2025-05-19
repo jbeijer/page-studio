@@ -435,9 +435,10 @@ export function validateJsonString(jsonString) {
 
 /**
  * Default canvas JSON structure to use for empty or invalid canvas data
+ * Using Fabric.js 5.3.0 version
  */
 const DEFAULT_CANVAS_JSON = {
-  version: "4.6.0",
+  version: "5.3.0",
   objects: [],
   background: "white"
 };
@@ -515,9 +516,14 @@ export function validateCanvasJson(json, autoRepair = true) {
   
   // Check fabric.js version (optional)
   if (!result.data.version) {
-    result.data.version = "4.6.0";
+    result.data.version = "5.3.0";
     isDataRepaired = true;
     logger.debug(LOG_MODULES.DOCUMENT, 'Added missing version to canvas JSON');
+  } else if (result.data.version !== "5.3.0") {
+    // If the version is not 5.3.0, update it
+    result.data.version = "5.3.0";
+    isDataRepaired = true;
+    logger.debug(LOG_MODULES.DOCUMENT, 'Updated Fabric.js version to 5.3.0');
   }
   
   // Validate objects array
@@ -581,6 +587,8 @@ export function validateCanvasJson(json, autoRepair = true) {
       // Check for required fabric.js properties based on object type
       switch (obj.type) {
         case 'text':
+        case 'textbox':
+        case 'i-text':
           // Text objects require text content
           if (!obj.text) {
             obj.text = 'Text content';
@@ -672,6 +680,12 @@ export function validateCanvasJson(json, autoRepair = true) {
         objRepaired = true;
       }
       
+      // Fabric.js 5.3.0 specific properties
+      if (obj.objectCaching === undefined) {
+        obj.objectCaching = true;
+        objRepaired = true;
+      }
+
       // Add custom properties needed by the editor
       if (obj.fromMaster === undefined && obj.masterId) {
         obj.fromMaster = true;

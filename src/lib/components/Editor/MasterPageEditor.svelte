@@ -3,6 +3,7 @@
   import { currentDocument } from '$lib/stores/document';
   import { activeTool, ToolType } from '$lib/stores/toolbar';
   import * as documentStore from '$lib/stores/document';
+  import masterPageService from '$lib/services/MasterPageService';
   
   const dispatch = createEventDispatcher();
   
@@ -37,7 +38,7 @@
    * Load a master page for editing
    * @param {string} id - Master page ID to load
    */
-  function loadMasterPage(id) {
+  async function loadMasterPage(id) {
     const masterPage = $currentDocument.masterPages.find(mp => mp.id === id);
     if (masterPage) {
       editingMasterPage = { ...masterPage };
@@ -47,60 +48,41 @@
   /**
    * Enter master page editing mode
    */
-  export function enterEditMode() {
+  export async function enterEditMode() {
     if (!canvasInstance || !editingMasterPage) return;
     
     // Save the original canvas state and tool
     originalCanvasState = canvasInstance.toJSON(['id', 'linkedObjectIds']);
     originalToolType = $activeTool;
     
-    // Clear the canvas and load master page content
-    canvasInstance.clear();
+    // Initialize masterPageService with the canvas instance if needed
+    masterPageService.initialize(canvasInstance);
     
-    if (editingMasterPage.canvasJSON) {
-      try {
-        const jsonData = typeof editingMasterPage.canvasJSON === 'string'
-          ? JSON.parse(editingMasterPage.canvasJSON)
-          : editingMasterPage.canvasJSON;
-          
-        canvasInstance.loadFromJSON(jsonData, () => {
-          // Mark all objects as part of master page
-          canvasInstance.getObjects().forEach(obj => {
-            obj.fromMaster = true;
-            obj.masterId = editingMasterPage.id;
-            if (!obj.masterObjectId) {
-              obj.masterObjectId = `master-obj-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-            }
-            
-            // By default, all master page objects are overridable
-            obj.overridable = true;
-          });
-          
-          canvasInstance.renderAll();
-        });
-      } catch (err) {
-        console.error('Error loading master page JSON:', err);
-      }
+    // Load the master page using the service
+    const success = await masterPageService.loadMasterPage(editingMasterPage.id);
+    
+    if (success) {
+      // Visual styling for master page editing mode
+      const canvasContainer = canvasInstance.wrapperEl.parentNode;
+      canvasContainer.classList.add('master-page-editing');
+      
+      isEditMode = true;
+      dispatch('editModeChanged', { isEditMode });
+    } else {
+      console.error('Failed to load master page for editing');
     }
-    
-    // Visual styling for master page editing mode
-    const canvasContainer = canvasInstance.wrapperEl.parentNode;
-    canvasContainer.classList.add('master-page-editing');
-    
-    isEditMode = true;
-    dispatch('editModeChanged', { isEditMode });
   }
   
   /**
    * Exit master page editing mode
    * @param {boolean} [save=true] - Whether to save changes to the master page
    */
-  export function exitEditMode(save = true) {
+  export async function exitEditMode(save = true) {
     if (!canvasInstance || !isEditMode) return;
     
     if (save) {
       // Save the current canvas state to the master page
-      saveMasterPage();
+      await saveMasterPage();
     }
     
     // Restore original canvas state
@@ -128,21 +110,17 @@
   /**
    * Save the current canvas state to the master page
    */
-  function saveMasterPage() {
+  async function saveMasterPage() {
     if (!canvasInstance || !editingMasterPage) return;
     
-    // Serialize canvas as JSON string
-    const canvasJSON = JSON.stringify(canvasInstance.toJSON([
-      'id', 'linkedObjectIds', 'fromMaster', 'masterId', 'masterObjectId', 'overridable'
-    ]));
+    // Use the masterPageService to save the master page
+    const success = await masterPageService.saveMasterPage(editingMasterPage.id);
     
-    // Update the master page in the store
-    documentStore.updateMasterPage(editingMasterPage.id, {
-      canvasJSON,
-      lastModified: new Date()
-    });
-    
-    dispatch('masterPageSaved', { masterPageId: editingMasterPage.id });
+    if (success) {
+      dispatch('masterPageSaved', { masterPageId: editingMasterPage.id });
+    } else {
+      console.error('Failed to save master page');
+    }
   }
   
   /**
@@ -152,7 +130,10 @@
   export function toggleObjectOverridable(fabricObject) {
     if (!fabricObject || !fabricObject.masterObjectId) return;
     
+    // Toggle overridable property
     fabricObject.overridable = !fabricObject.overridable;
+    
+    // Update canvas rendering
     canvasInstance.renderAll();
   }
   

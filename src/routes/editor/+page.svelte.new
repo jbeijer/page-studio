@@ -4,7 +4,7 @@
   import { currentDocument, currentPage } from '$lib/stores/document';
   
   // Core Components
-  import Canvas from '$lib/components/Editor/Canvas.svelte';
+  import Canvas from '$lib/components/Editor/Canvas.refactored.svelte';
   import Toolbar from '$lib/components/Editor/Toolbar.svelte';
   import MasterPageController from '$lib/components/Editor/MasterPageController.svelte';
   
@@ -12,14 +12,11 @@
   import EditorHeader from '$lib/components/Editor/editor/EditorHeader.svelte';
   import PageNavigator from '$lib/components/Editor/editor/PageNavigator.svelte';
   import PropertiesPanel from '$lib/components/Editor/editor/PropertiesPanel.svelte';
-  import { createDocumentManager } from '$lib/components/Editor/editor/DocumentManager.js';
-  import { createAutoSaveManager } from '$lib/components/Editor/editor/AutoSaveManager.js';
   
-  // Services
+  // Service Provider and Services
   import ServiceProvider from '$lib/services/ServiceProvider.svelte';
-  import documentService from '$lib/services/DocumentService';
-  import canvasService from '$lib/services/CanvasService';
-  import masterPageService from '$lib/services/MasterPageService';
+  import { documentService, canvasService, masterPageService } from '$lib/services';
+  import { createLegacyDocumentManager, createLegacyAutoSaveManager } from '$lib/services/ServiceIntegration';
   
   // For SSR prevention
   export const ssr = false;
@@ -35,31 +32,28 @@
   let canUndo = false;
   let canRedo = false;
   
-  // Page title
-  let title = "PageStudio Editor";
-  
-  // Create application context
+  // Create application context (legacy compatibility)
   const context = {
-    canvasComponent: undefined,
-    documentManager: undefined,
-    autoSaveManager: undefined
+    canvasComponent: undefined
   };
+  
+  // Create legacy-compatible managers for transition period
+  let documentManager;
+  let autoSaveManager;
   
   onMount(async () => {
     // Update context with available components
     context.canvasComponent = canvasComponent;
     
-    // Legacy managers for backward compatibility during transition to services
-    context.documentManager = createDocumentManager(context);
-    
-    // Initialize auto-save manager (will use DocumentService internally)
-    context.autoSaveManager = createAutoSaveManager(context, {
+    // Initialize legacy managers
+    documentManager = createLegacyDocumentManager(context);
+    autoSaveManager = createLegacyAutoSaveManager(context, {
       autoSaveDelay: 30000,    // 30 seconds
       forceSaveInterval: 15000 // 15 seconds
     });
     
     // Initialize auto-save systems
-    context.autoSaveManager.initialize();
+    autoSaveManager.initialize();
     
     // Get document ID from URL (only on client-side)
     let docId = null;
@@ -74,18 +68,13 @@
       }
     }
     
-    // Ensures canvas service is initialized once canvas is available
-    if (canvasComponent) {
-      console.log("Initializing services with canvas reference");
-      canvasService.initialize(canvasComponent);
-      documentService.initialize(canvasComponent);
-      masterPageService.initialize(canvasComponent);
-    }
-    
     // Load existing document or create a new one
     if (docId) {
       // Reset canvas before loading to ensure no stale content
-      canvasService.resetCanvas();
+      if (canvasComponent && typeof canvasComponent.resetCanvas === 'function') {
+        console.log("Resetting canvas before document load");
+        canvasComponent.resetCanvas();
+      }
       
       console.log("Loading document with ID:", docId);
       const loadedDocument = await documentService.loadDocumentById(docId);
@@ -95,29 +84,41 @@
         console.log(`Successfully loaded document: ${documentTitle} (${loadedDocument.id})`);
       } else {
         console.log("Document not found, creating new document");
+        // Force a complete reset before creating new document
+        if (canvasComponent && typeof canvasComponent.resetCanvas === 'function') {
+          canvasComponent.resetCanvas();
+        }
         
-        // Reset canvas for clean state
-        canvasService.resetCanvas();
-        
-        // Create a new document
-        const newDoc = await documentService.createNewDocument({ title: "Untitled Document" });
-        console.log(`Created new document with ID: ${newDoc.id}`);
+        // Create a new document with a completely clean slate
+        setTimeout(async () => {
+          const newDoc = await documentService.createNewDocument({ title: "Untitled Document" });
+          console.log(`Created new document with ID: ${newDoc.id}`);
+        }, 50);
       }
     } else {
       console.log("No document ID provided, creating new document");
       
-      // Reset canvas for clean state
-      canvasService.resetCanvas();
+      // Perform a complete reset before creating a new document
+      if (canvasComponent && typeof canvasComponent.resetCanvas === 'function') {
+        console.log("Performing canvas reset before new document creation");
+        canvasComponent.resetCanvas();
+      }
       
-      // Create a new document with a completely clean state
-      const newDoc = await documentService.createNewDocument({ title: "Untitled Document" });
-      console.log(`Created new document with ID: ${newDoc.id}`);
+      // Create a new document with a completely clean slate
+      setTimeout(async () => {
+        try {
+          console.log("Now creating new document with completely clean state");
+          const newDoc = await documentService.createNewDocument({ title: "Untitled Document" });
+          console.log(`Created new document with ID: ${newDoc.id}`);
+        } catch (err) {
+          console.error("Error during new document creation:", err);
+        }
+      }, 200);
     }
     
     // Cleanup when component unmounts
     return () => {
-      // Services will be cleaned up by ServiceProvider
-      context.autoSaveManager.cleanup();
+      autoSaveManager.cleanup();
     };
   });
   
@@ -139,15 +140,12 @@
       
       // Update document title
       if (documentTitle !== $currentDocument.title) {
-        context.documentManager.updateDocumentTitle(documentTitle);
+        documentService.updateDocumentTitle(documentTitle);
       }
       
       // Save the document
-      const result = await context.documentManager.handleSave();
+      await documentService.forceSave();
       
-      if (!result.success) {
-        saveError = result.error;
-      }
     } catch (err) {
       console.error('Error in handleSave:', err);
       saveError = err.message || "An unknown error occurred";
@@ -163,7 +161,7 @@
   }
   
   function handleAddPage(masterPageId = null) {
-    context.documentManager.handleAddPage(masterPageId);
+    documentService.addPage(masterPageId);
   }
   
   function toggleMasterPagePanel() {
@@ -175,20 +173,21 @@
   function handleEditMasterPage(event) {
     const { masterPageId } = event.detail;
     // TODO: Implement master page editing
+    if (masterPageController) {
+      masterPageController.editMasterPage(masterPageId);
+    }
   }
   
   function handleMasterPageApplied(event) {
     // Refresh the canvas to show the applied master page
     if (canvasComponent) {
-      canvasComponent.loadPage($currentPage);
+      const pageId = $currentPage;
+      documentService.switchToPage(pageId);
     }
   }
 </script>
 
-<svelte:head>
-  <title>{title}</title>
-</svelte:head>
-
+<!-- Wrap entire app in ServiceProvider for dependency injection -->
 <ServiceProvider>
   <div class="h-screen flex flex-col">
     <!-- Header -->
@@ -212,6 +211,7 @@
           bind:this={canvasComponent} 
           on:objectselected={handleObjectSelected}
           on:historyChange={handleHistoryChange}
+          on:editMasterPage={handleEditMasterPage}
         />
         
         <!-- Master Page Controller -->
