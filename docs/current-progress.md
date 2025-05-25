@@ -102,12 +102,18 @@ Detta dokument ger en överblick över det aktuella tillståndet i PageStudio-pr
    - ~~Implementera kopiera/klistra in-funktionalitet~~ ✓
    - ~~Skapa ångra/gör om-funktion~~ ✓
 
-3. **Rutnät & Hjälplinjer**
-   - Implementera konfigurerbart rutnät
-   - Utveckla rulers och hjälplinjer
+3. **~~Kodbasrefaktorering~~ (SLUTFÖRT)**
+   - ~~Implementera service-baserad arkitektur~~ ✓
+   - ~~Refaktorera Canvas-moduler till services~~ ✓
+   - ~~Förbättra testbarhet och kodkvalitet~~ ✓
+   - ~~Uppdatera komponenter för att använda services~~ ✓
+
+4. **Rutnät & Hjälplinjer**
+   - Implementera konfigurerbart rutnät med GridService
+   - Utveckla rulers och hjälplinjer med GuideService
    - Implementera snappning till rutnät
 
-4. **Förbättrad PDF-export**
+5. **Förbättrad PDF-export**
    - Optimera nuvarande PDF-exportlösning
    - Implementera grundläggande metadata-hantering
    - Förbättra bildkvalitet i exporterade dokument
@@ -168,6 +174,18 @@ Vi har åtgärdat importerna av Fabric.js-biblioteket för att säkerställa att
 import * as fabric from 'fabric';
 ```
 
+## Nyligen slutförda större initiativ
+
+### Service-baserad refaktorering (SLUTFÖRT)
+Vi har framgångsrikt implementerat en service-baserad arkitektur för PageStudio:
+
+1. **Modularisering av kodbas**: All canvas- och dokumenthanteringsfunktionalitet har refaktorerats till singleton services
+2. **Förbättrad testbarhet**: Services har tydligt definierade ansvarsområden och API:er, vilket ger bättre testbarhet
+3. **Dependency Injection**: Implementerat Svelte Context-baserad dependency injection för services
+4. **Konsekvent API-design**: Alla services följer en gemensam livscykelmodell med initialize/cleanup-mönster
+5. **Komplett testning**: Alla services har omfattande testfiler som validerar funktionaliteten
+6. **Dokumentation**: Service-arkitekturen är nu fullständigt dokumenterad i docs/service-based-architecture.md
+
 ## Återstående utmaningar
 
 1. **Svelte 5 kompatibilitet** - Vi har stött på några utmaningar med Svelte 5 och testning som behöver lösas för att få stabil testinfrastruktur.
@@ -175,3 +193,5 @@ import * as fabric from 'fabric';
 2. **Canvas-rendering prestanda** - Kan bli en utmaning när vi hanterar större dokument med många objekt. Vi behöver implementera optimeringar för canvas-rendering.
 
 3. **IndexedDB-komplexitet** - Att spara och återskapa komplexa canvas-objekt med länkade relationer kräver noggrann implementation.
+
+4. **Service cirkulära beroenden** - Vissa services har cirkulära beroenden som behöver åtgärdas för att förbättra kodkvaliteten och underhållbarheten.

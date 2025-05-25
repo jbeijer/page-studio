@@ -19,7 +19,19 @@ export const MASTER_PAGE_STORE = 'masterPages';
  */
 export function openDatabase() {
   return new Promise((resolve, reject) => {
+    // Check if we're in a browser environment
+    if (typeof window === 'undefined') {
+      reject(new Error('Cannot access IndexedDB in a server-side environment'));
+      return;
+    }
+    
     try {
+      // Check if IndexedDB is available
+      if (!window.indexedDB) {
+        reject(new Error('IndexedDB is not available in this browser'));
+        return;
+      }
+      
       const request = indexedDB.open(DB_NAME, DB_VERSION);
     
       request.onerror = (event) => {

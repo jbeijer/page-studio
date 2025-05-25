@@ -3,6 +3,7 @@
   import { getDocumentList, deleteDocument } from '$lib/utils/storage';
   import { documentList } from '$lib/stores/document';
   import { goto } from '$app/navigation';
+  import { createSlug } from '$lib/utils/slug-helper';
 
   let loading = true;
   let error = null;
@@ -32,9 +33,19 @@
     }
   });
 
-  // Open a document in the editor
-  async function openDocument(documentId) {
-    goto(`/editor?id=${documentId}`);
+  // Open a document in the editor with a slug-based URL
+  async function openDocument(documentId, title) {
+    try {
+      // Create URL-friendly slug using our utility function
+      const slug = createSlug(title, documentId);
+      
+      // Navigate to the document using the slug route
+      goto(`/editor/${slug}`);
+    } catch (err) {
+      console.error('Error navigating to document:', err);
+      // Fallback to a basic URL if slug creation fails
+      goto(`/editor/doc-${documentId}`);
+    }
   }
 
   // Delete a document after confirmation
@@ -68,7 +79,7 @@
     <div class="bg-gray-50 border border-gray-200 rounded-lg p-6 text-center">
       <h3 class="text-lg font-medium mb-2">No documents yet</h3>
       <p class="text-gray-600 mb-4">Create your first document to get started.</p>
-      <a href="/editor" class="btn btn-primary">Create New Document</a>
+      <a href="/editor/new" class="btn btn-primary">Create New Document</a>
     </div>
   {:else}
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -85,7 +96,7 @@
             <div class="flex gap-2">
               <button 
                 class="btn btn-primary flex-1" 
-                on:click={() => openDocument(doc.id)}
+                on:click={() => openDocument(doc.id, doc.title)}
               >
                 Open
               </button>
@@ -103,7 +114,7 @@
   {/if}
   
   <div class="mt-8 flex justify-center">
-    <a href="/editor" class="btn btn-primary">Create New Document</a>
+    <a href="/editor/new" class="btn btn-primary">Create New Document</a>
   </div>
 </div>
 

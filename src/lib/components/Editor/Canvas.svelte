@@ -18,6 +18,7 @@
   import VerticalRuler from './VerticalRuler.svelte';
   // Import guides service
 import guideService from '$lib/services/GuideService.js';
+import gridService from '$lib/services/GridService.js';
   import { loadDocument, saveDocument } from '$lib/utils/storage.js';
   import { pageRecovery } from '$lib/utils/page-recovery.js';
   
@@ -72,6 +73,7 @@ import guideService from '$lib/services/GuideService.js';
   // Module functions that will be initialized
   let eventHandlers;
   let gridManagement;
+  let documentManagement;
   
   // State variables
   let isMounted = false;
@@ -106,33 +108,14 @@ import guideService from '$lib/services/GuideService.js';
   $: rulerHeight = height;
   $: rulerOffset = 20; // Width/height of the rulers
   
-  // Watch for grid changes
-  $: if (canvas && $currentDocument?.metadata?.grid) {
-    // Use our GridService to render the grid
-    import('$lib/services/GridService').then(module => {
-      const gridService = module.default;
-      gridService.initialize({
-        canvas,
-        canvasElement,
-        width,
-        height
-      });
-      gridService.renderGrid();
-    });
+  // Watch for grid changes and re-render when metadata changes
+  $: if (canvas && $currentDocument?.metadata?.grid && gridService.initialized) {
+    // Only render the grid, don't re-initialize the service
+    gridService.renderGrid();
     
-    // Initialize GuideService if it hasn't been initialized yet
-    if (!guideService.initialized) {
-      console.log("Initializing GuideService from grid change watcher");
-      guideService.initialize({
-        canvas,
-        width,
-        height
-      });
-      
-      // Load guides for current page
-      if ($currentPage) {
-        guideService.loadGuidesFromDocument();
-      }
+    // Load guides for current page if they may have changed
+    if ($currentPage && guideService.initialized) {
+      guideService.loadGuidesFromDocument();
     }
   }
   
@@ -242,6 +225,11 @@ import guideService from '$lib/services/GuideService.js';
       eventHandlers = createEventHandlers(context);
     }
     
+    // Ensure documentManagement is initialized
+    if (!documentManagement) {
+      documentManagement = createDocumentManagement(context);
+    }
+    
     // Update context with service references and methods
     context.update({
       // Service references
@@ -256,6 +244,7 @@ import guideService from '$lib/services/GuideService.js';
       toolService,
       textFlowService,
       guideService,
+      documentManagement,
       
       // Event handlers
       handleMouseDown: eventHandlers.handleMouseDown,
@@ -546,8 +535,22 @@ import guideService from '$lib/services/GuideService.js';
       canvas.backgroundColor = jsonData.background || 'white';
       canvas.renderAll();
       
-      // Use our document management function to create objects
-      const createdObjects = documentManagement.createObjectsManually(jsonData.objects);
+      // Use available document management function to create objects
+      let createdObjects = [];
+      
+      // First try documentManagement
+      if (documentManagement && typeof documentManagement.createObjectsManually === 'function') {
+        createdObjects = documentManagement.createObjectsManually(jsonData.objects);
+      }
+      // Then try documentModuleService as fallback
+      else if (documentModuleService && documentModuleService.initialized && 
+               typeof documentModuleService.createObjectsManually === 'function') {
+        console.log("RECOVERY: Using documentModuleService.createObjectsManually as fallback");
+        createdObjects = documentModuleService.createObjectsManually(jsonData.objects);
+      }
+      else {
+        console.error("RECOVERY: No createObjectsManually method available");
+      }
       
       // Add all created objects to the canvas
       createdObjects.forEach(obj => {
@@ -771,8 +774,22 @@ import guideService from '$lib/services/GuideService.js';
             return obj;
           });
           
-          // Use await to ensure the save completes before moving on
-          const saveSuccess = documentManagement.saveSpecificPage(previousPage, objectsToSave);
+          // Use one of the available save methods
+          let saveSuccess = false;
+          
+          // First try to use documentManagement if it's available
+          if (documentManagement && typeof documentManagement.saveSpecificPage === 'function') {
+            saveSuccess = documentManagement.saveSpecificPage(previousPage, objectsToSave);
+          } 
+          // Fallback to documentModuleService if available
+          else if (documentModuleService && documentModuleService.initialized && 
+                   typeof documentModuleService.saveSpecificPage === 'function') {
+            console.log(`SAVE PHASE [${switchOperationId}]: Using documentModuleService.saveSpecificPage fallback`);
+            saveSuccess = documentModuleService.saveSpecificPage(previousPage, objectsToSave);
+          }
+          else {
+            console.error(`SAVE PHASE [${switchOperationId}]: No save method available`);
+          }
           console.log(`SAVE PHASE [${switchOperationId}]: Save result: ${saveSuccess ? 'success' : 'failure'}`);
           
           console.log(`SAVE PHASE [${switchOperationId}]: Successfully saved page ${previousPage} with ${objectsToSave.length} objects`);
@@ -1051,25 +1068,48 @@ import guideService from '$lib/services/GuideService.js';
       }
     }, 5000);
     
-    documentManagement.loadPage($currentPage, false).then(() => {
-      const loadDuration = performance.now() - loadStartTime;
-      console.log(`LOAD PHASE [${switchOperationId}]: loadPage() completed in ${loadDuration.toFixed(2)}ms`);
+    // Check if documentManagement is properly initialized
+    if (documentManagement && typeof documentManagement.loadPage === 'function') {
+      documentManagement.loadPage($currentPage, false).then(() => {
+        const loadDuration = performance.now() - loadStartTime;
+        console.log(`LOAD PHASE [${switchOperationId}]: loadPage() completed in ${loadDuration.toFixed(2)}ms`);
+        
+        // Clear the safety timeout
+        clearTimeout(loadTimeoutId);
+      }).catch(err => {
+        console.error(`LOAD PHASE [${switchOperationId}] ERROR: Failed to load page:`, err);
+        
+        // Clear the safety timeout since we already hit an error
+        clearTimeout(loadTimeoutId);
+        
+        // Fallback to a clean canvas if loading fails
+        if (canvas) {
+          canvas.clear();
+          canvas.backgroundColor = 'white';
+          canvas.renderAll();
+        }
+      });
+    } else {
+      console.error(`LOAD PHASE [${switchOperationId}] ERROR: documentManagement not initialized or missing loadPage method`);
       
-      // Clear the safety timeout
-      clearTimeout(loadTimeoutId);
-    }).catch(err => {
-      console.error(`LOAD PHASE [${switchOperationId}] ERROR: Failed to load page:`, err);
-      
-      // Clear the safety timeout since we already hit an error
-      clearTimeout(loadTimeoutId);
-      
-      // Fallback to a clean canvas if loading fails
-      if (canvas) {
-        canvas.clear();
-        canvas.backgroundColor = 'white';
-        canvas.renderAll();
+      // Alternative load through documentModuleService
+      if (documentModuleService && documentModuleService.initialized && documentModuleService.loadPage) {
+        console.log(`LOAD PHASE [${switchOperationId}]: Falling back to documentModuleService.loadPage`);
+        documentModuleService.loadPage($currentPage).then(() => {
+          const loadDuration = performance.now() - loadStartTime;
+          console.log(`LOAD PHASE [${switchOperationId}]: loadPage() via service completed in ${loadDuration.toFixed(2)}ms`);
+          
+          // Clear the safety timeout
+          clearTimeout(loadTimeoutId);
+        }).catch(err => {
+          console.error(`LOAD PHASE [${switchOperationId}] ERROR: Service fallback load failed:`, err);
+          clearTimeout(loadTimeoutId);
+        });
+      } else {
+        console.error(`LOAD PHASE [${switchOperationId}] ERROR: No fallback loading method available`);
+        clearTimeout(loadTimeoutId);
       }
-    });
+    }
     
     // Force render cycles with a single delay
     setTimeout(() => {
@@ -1553,34 +1593,34 @@ export function recoverCurrentPage() {
         height
       });
       
-      // Grid service is dynamically imported, so handle it differently
-      import('$lib/services/GridService').then(module => {
-        const gridService = module.default;
-        gridService.initialize({
-          canvas,
-          canvasElement,
-          width,
-          height
-        });
-        
-        // If grid is enabled, render it
-        if ($currentDocument?.metadata?.grid?.enabled) {
-          gridService.renderGrid();
-        }
-        
-        // Update context with gridService
-        const context = contextService.createProxy();
-        if (context) {
-          context.update({
-            gridService,
-            renderGrid: gridService.renderGrid,
-            toggleGrid: gridService.toggleGrid,
-            updateGridProperties: gridService.updateGridProperties,
-            snapToGrid: gridService.snapToGrid,
-            convertToPixels: gridService.convertToPixels
-          });
-        }
+      // Initialize grid service directly
+      gridService.initialize({
+        canvas,
+        canvasElement,
+        width,
+        height
       });
+      
+      // If grid is enabled, render it
+      if ($currentDocument?.metadata?.grid?.enabled) {
+        gridService.renderGrid();
+      }
+      
+      // Update context with gridService
+      contextService.update({
+        gridService,
+        renderGrid: gridService.renderGrid,
+        toggleGrid: gridService.toggleGrid,
+        updateGridProperties: gridService.updateGridProperties,
+        snapToGrid: gridService.snapToGrid,
+        snapObjectToGrid: gridService.snapObjectToGrid,
+        convertToPixels: gridService.convertToPixels
+      });
+      
+      // Initialize documentManagement
+      if (!documentManagement) {
+        documentManagement = createDocumentManagement(contextService.createProxy());
+      }
       
       // Update context with all service references and methods
       const context = updateContextWithServices();
@@ -1611,6 +1651,31 @@ export function recoverCurrentPage() {
   
   onMount(() => {
     isMounted = true;
+    
+    // Initialize documentManagement early if possible
+    if (contextService && contextService.initialized) {
+      documentManagement = createDocumentManagement(contextService.createProxy());
+    } else {
+      // Create a placeholder that will be properly initialized later
+      documentManagement = {
+        loadPage: async () => {
+          console.warn("documentManagement.loadPage called before initialization");
+          return false;
+        },
+        saveCurrentPage: () => {
+          console.warn("documentManagement.saveCurrentPage called before initialization");
+          return false;
+        },
+        saveSpecificPage: () => {
+          console.warn("documentManagement.saveSpecificPage called before initialization");
+          return false;
+        },
+        createObjectsManually: () => {
+          console.warn("documentManagement.createObjectsManually called before initialization");
+          return [];
+        }
+      };
+    }
     
     // Set up global recovery references early
     window.saveDocument = saveDocument;
@@ -1786,7 +1851,41 @@ export function recoverCurrentPage() {
       canvas.setupForTool = setupCanvasForTool;
       
       // Initialize all services through our centralized function
-      initializeServices();
+      if (initializeServices()) {
+        console.log("Services successfully initialized");
+        
+        // Make services available globally for external component access
+        if (typeof window !== 'undefined') {
+          window.$services = {
+            toolService,
+            layerService,
+            objectService,
+            historyService,
+            documentService,
+            documentModuleService,
+            textFlowService,
+            contextService
+          };
+          
+          // Also make canvas utility methods available
+          window.$canvasUtils = {
+            getCanvas: () => canvas,
+            bringForward: () => layerService.bringForward(),
+            sendBackward: () => layerService.sendBackward(),
+            bringToFront: () => layerService.bringToFront(),
+            sendToBack: () => layerService.sendToBack(),
+            deleteSelectedObjects: () => objectService.deleteSelectedObjects(),
+            copySelectedObjects: () => objectService.copySelectedObjects(),
+            cutSelectedObjects: () => objectService.cutSelectedObjects(),
+            pasteObjects: () => objectService.pasteObjects(),
+            undo: () => historyService.undo(),
+            redo: () => historyService.redo(),
+            setActiveTool: (tool) => toolService.setActiveTool(tool)
+          };
+        }
+      } else {
+        console.error("Service initialization failed");
+      }
     } catch (error) {
       console.error("Canvas initialization failed:", error);
       setCanvasError(`Canvas initialization failed: ${error.message}`);
@@ -1888,86 +1987,133 @@ export function recoverCurrentPage() {
     function cleanupServices() {
       console.log("Cleaning up all services");
       
+      // First remove event handlers to prevent errors during cleanup
       try {
-        // First remove event handlers to prevent errors during cleanup
         if (eventHandlers && typeof eventHandlers.removeEventHandlers === 'function') {
           console.log("Removing event handlers");
           eventHandlers.removeEventHandlers();
         } else {
           console.warn("No eventHandlers.removeEventHandlers function available");
         }
-        
-        // Clean up services in roughly reverse order of initialization
-        
-        // Visualization services
-        console.log("Cleaning up visualization services");
-        guideService.cleanup();
-        
-        // Dynamic import GridService for cleanup
-        import('$lib/services/GridService').then(module => {
-          const gridService = module.default;
-          gridService.cleanup();
-        });
-        
-        // Interactive services
-        console.log("Cleaning up interactive services");
-        historyService.cleanup();
-        toolService.cleanup();
-        textFlowService.cleanup();
-        
-        // Canvas object manipulation services
-        console.log("Cleaning up object/layer manipulation services");
-        objectService.cleanup();
-        layerService.cleanup();
-        
-        // Document handling services
-        console.log("Cleaning up document services");
-        documentModuleService.cleanup();
-        masterPageService.cleanup();
-        
-        // Core services last as other services may depend on them
-        console.log("Cleaning up core services");
-        documentService.cleanup();
-        canvasService.cleanup();
-        contextService.cleanup();
-        
-        console.log("All services cleaned up successfully");
-        return true;
-      } catch (err) {
-        console.error("Error during services cleanup:", err);
-        return false;
+      } catch (handlersError) {
+        console.warn("Error removing event handlers:", handlersError);
       }
+      
+      // Helper function to safely clean up a service
+      const safeCleanupService = (service, name) => {
+        if (!service) return;
+        
+        try {
+          if (typeof service.cleanup === 'function') {
+            service.cleanup();
+            console.log(`Successfully cleaned up ${name}`);
+          } else {
+            console.warn(`${name} has no cleanup method`);
+          }
+        } catch (error) {
+          console.warn(`Error cleaning up ${name}:`, error);
+        }
+      };
+      
+      // Clean up services in roughly reverse order of initialization
+      // Each in its own try-catch block for isolation
+      
+      // Visualization services
+      console.log("Cleaning up visualization services");
+      safeCleanupService(guideService, 'guideService');
+      safeCleanupService(gridService, 'gridService');
+      
+      // Interactive services
+      console.log("Cleaning up interactive services");
+      safeCleanupService(historyService, 'historyService');
+      safeCleanupService(toolService, 'toolService');
+      safeCleanupService(textFlowService, 'textFlowService');
+      
+      // Canvas object manipulation services
+      console.log("Cleaning up object/layer manipulation services");
+      safeCleanupService(objectService, 'objectService');
+      safeCleanupService(layerService, 'layerService');
+      
+      // Document handling services
+      console.log("Cleaning up document services");
+      safeCleanupService(documentModuleService, 'documentModuleService');
+      safeCleanupService(masterPageService, 'masterPageService');
+      
+      // Core services last as other services may depend on them
+      console.log("Cleaning up core services");
+      safeCleanupService(documentService, 'documentService');
+      safeCleanupService(canvasService, 'canvasService');
+      safeCleanupService(contextService, 'contextService');
+      
+      console.log("All services cleanup attempts completed");
+      return true;
     }
     
     return () => {
       console.log("Canvas component unmounting, cleaning up resources");
       
       // Reset canvas readiness state
-      resetCanvasReady();
+      try {
+        resetCanvasReady();
+      } catch (err) {
+        console.warn("Error resetting canvas ready state:", err);
+      }
       
-      // Clean up canvas and services on component unmount
+      // Clean up services first in a separate try-catch
       try {
         // Clean up all services first
         cleanupServices();
-        
-        // Stop page recovery
+      } catch (serviceErr) {
+        console.error("Error during service cleanup:", serviceErr);
+      }
+      
+      // Stop page recovery in a separate try-catch
+      try {
         pageRecovery.stopSnapshots();
-        
-        // Finally dispose the canvas
-        if (canvas) {
+      } catch (recoveryErr) {
+        console.warn("Error stopping page recovery:", recoveryErr);
+      }
+      
+      // Finally dispose the canvas in its own try-catch
+      if (canvas) {
+        try {
           console.log("Disposing canvas");
+          
+          // First remove all objects to avoid DOM errors
+          try {
+            if (typeof canvas.getObjects === 'function') {
+              const objects = canvas.getObjects();
+              for (let i = objects.length - 1; i >= 0; i--) {
+                canvas.remove(objects[i]);
+              }
+            }
+          } catch (removeErr) {
+            console.warn("Error removing canvas objects:", removeErr);
+          }
+          
+          // Now attempt to dispose the canvas itself
           canvas.dispose();
+        } catch (canvasErr) {
+          console.warn("Error disposing canvas:", canvasErr);
+        } finally {
           canvas = null;
         }
-        
-        // Clear global references
-        window.$canvas = null;
-        window.$globalContext = null;
-        
-        console.log("Canvas cleanup complete");
-      } catch (err) {
-        console.error("Error during canvas cleanup:", err);
       }
+      
+      // Clear all global references in their own try-catch
+      try {
+        if (typeof window !== 'undefined') {
+          window.$canvas = null;
+          window.$globalContext = null;
+          window.$canvasUtils = null;
+          window.$services = null;
+          window.$toolService = null;
+        }
+      } catch (globalErr) {
+        console.warn("Error clearing global references:", globalErr);
+      }
+      
+      console.log("Canvas cleanup complete");
     };
   });
 </script>

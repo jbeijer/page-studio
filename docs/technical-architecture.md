@@ -1,5 +1,5 @@
 # Teknisk Arkitektur för Webbaserad InDesign-ersättare
-## 2025-05-17
+## 2025-05-19
 
 Detta dokument beskriver den tekniska arkitekturen för den webbaserade InDesign-ersättaren. Det inkluderar val av teknologier, datamodeller, och hur olika komponenter interagerar med varandra.
 

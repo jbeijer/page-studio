@@ -131,68 +131,92 @@
   const MAX_INIT_ATTEMPTS = 10;
   
   function tryInitializeCanvas() {
+    // Check for global canvas reference first as a fallback
+    let fabricCanvas = null;
+    
     if (!canvasComponent) {
-      // Try again after a short delay
-      if (initAttempts < MAX_INIT_ATTEMPTS) {
-        initAttempts++;
-        initTimer = setTimeout(tryInitializeCanvas, 100);
+      // Try to use window.$canvas as fallback
+      if (typeof window !== 'undefined' && window.$canvas) {
+        console.log("Using window.$canvas as fallback since canvasComponent is not available");
+        fabricCanvas = window.$canvas;
       } else {
-        console.error('Failed to initialize canvas component after multiple attempts');
+        // Try again after a short delay
+        if (initAttempts < MAX_INIT_ATTEMPTS) {
+          initAttempts++;
+          initTimer = setTimeout(tryInitializeCanvas, 100);
+        } else {
+          console.error('Failed to initialize canvas component after multiple attempts');
+        }
+        return;
       }
-      return;
+    } else if (canvasComponent.getCanvas && typeof canvasComponent.getCanvas === 'function') {
+      // Get canvas from component
+      fabricCanvas = canvasComponent.getCanvas();
     }
     
-    // Check if the canvas component has the getCanvas function at minimum
-    if (canvasComponent.getCanvas && typeof canvasComponent.getCanvas === 'function') {
-      const fabricCanvas = canvasComponent.getCanvas();
+    // Validate the canvas instance
+    if (fabricCanvas && fabricCanvas.add && typeof fabricCanvas.add === 'function' && 
+        fabricCanvas.on && typeof fabricCanvas.on === 'function') {
       
-      if (fabricCanvas) {
-        // Check if services need initialization
-        if (!layerService.initialized || !objectService.initialized || 
-            !historyService.initialized || !toolService.initialized) {
-          
-          console.log("Initializing services that aren't already initialized");
-          
-          // Initialize any services that aren't already initialized
-          if (!layerService.initialized) {
-            layerService.initialize({ canvas: fabricCanvas });
-          }
-          
-          if (!objectService.initialized) {
-            objectService.initialize({ 
-              canvas: fabricCanvas,
-              generateId: () => 'obj-' + Date.now() + '-' + Math.floor(Math.random() * 1000)
-            });
-          }
-          
-          if (!historyService.initialized) {
-            historyService.initialize({ 
-              canvas: fabricCanvas,
-              onChange: updateHistoryState
-            });
-          }
-          
-          if (!toolService.initialized) {
-            toolService.initialize({ canvas: fabricCanvas });
-          }
+      console.log("Found valid Fabric.js canvas instance for service initialization");
+      
+      // Check if services need initialization
+      if (!layerService.initialized || !objectService.initialized || 
+          !historyService.initialized || !toolService.initialized) {
+        
+        console.log("Initializing services that aren't already initialized");
+        
+        // Initialize any services that aren't already initialized
+        if (!layerService.initialized) {
+          layerService.initialize({ canvas: fabricCanvas });
         }
         
-        // Now initialize the toolbar with services
-        initializeServices(canvasComponent);
+        if (!objectService.initialized) {
+          objectService.initialize({ 
+            canvas: fabricCanvas,
+            generateId: () => 'obj-' + Date.now() + '-' + Math.floor(Math.random() * 1000)
+          });
+        }
         
-        // Set up canvas event listeners for selection state
-        // Remove any existing listeners to prevent duplicates
-        fabricCanvas.off('selection:created', updateSelectionState);
-        fabricCanvas.off('selection:updated', updateSelectionState);
-        fabricCanvas.off('selection:cleared', updateSelectionState);
+        if (!historyService.initialized) {
+          historyService.initialize({ 
+            canvas: fabricCanvas,
+            onChange: updateHistoryState
+          });
+        }
         
-        // Add listeners
-        fabricCanvas.on('selection:created', updateSelectionState);
-        fabricCanvas.on('selection:updated', updateSelectionState);
-        fabricCanvas.on('selection:cleared', updateSelectionState);
+        if (!toolService.initialized) {
+          console.log("Initializing toolService with canvas");
+          toolService.initialize({ canvas: fabricCanvas });
+        }
+        
+        // Store global reference for component communication
+        if (typeof window !== 'undefined') {
+          window.$toolService = toolService;
+        }
       }
+      
+      // Now initialize the toolbar with services
+      initializeServices(canvasComponent || { getCanvas: () => fabricCanvas });
+      
+      // Set up canvas event listeners for selection state
+      // Remove any existing listeners to prevent duplicates
+      fabricCanvas.off('selection:created', updateSelectionState);
+      fabricCanvas.off('selection:updated', updateSelectionState);
+      fabricCanvas.off('selection:cleared', updateSelectionState);
+      
+      // Add listeners
+      fabricCanvas.on('selection:created', updateSelectionState);
+      fabricCanvas.on('selection:updated', updateSelectionState);
+      fabricCanvas.on('selection:cleared', updateSelectionState);
     } else {
-      console.warn('Canvas component does not have the required getCanvas method');
+      console.warn('No valid Fabric.js canvas instance available for service initialization');
+      
+      // Try again with delay if we're still under the attempt limit
+      if (initAttempts < MAX_INIT_ATTEMPTS) {
+        initAttempts++;
+        initTimer = setTimeout(tryInitializeCanvas, 200); // Longer delay for retries
+      }
     }
   }
   

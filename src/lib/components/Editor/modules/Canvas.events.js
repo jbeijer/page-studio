@@ -763,6 +763,45 @@ export function createEventHandlers(context) {
     canvas.on('selection:updated', handleObjectSelected);
     canvas.on('selection:cleared', handleSelectionCleared);
     
+    // Add handlers for object movement and scaling with grid snapping
+    if (context.snapObjectToGrid) {
+      // Snap objects when they are being moved
+      canvas.on('object:moving', (options) => {
+        if (options.target && context.snapObjectToGrid) {
+          try {
+            context.snapObjectToGrid(options.target);
+          } catch (err) {
+            console.error("Error applying grid snap during object move:", err);
+          }
+        }
+      });
+      
+      // Snap objects when they are being scaled
+      canvas.on('object:scaling', (options) => {
+        if (options.target && context.snapObjectToGrid) {
+          try {
+            context.snapObjectToGrid(options.target);
+          } catch (err) {
+            console.error("Error applying grid snap during object scaling:", err);
+          }
+        }
+      });
+      
+      // Snap objects when they are being rotated (to nearest 15 degrees)
+      canvas.on('object:rotating', (options) => {
+        if (options.target) {
+          try {
+            // Snap rotation to nearest 15 degrees
+            const angle = options.target.angle;
+            const snapAngle = Math.round(angle / 15) * 15;
+            options.target.set({ angle: snapAngle });
+          } catch (err) {
+            console.error("Error applying angle snap during object rotation:", err);
+          }
+        }
+      });
+    }
+    
     // Listen for changes to update store with better debugging and error handling
     // Import the document module functions for direct access
     // We need this for safer saveCurrentPage access
@@ -803,6 +842,11 @@ export function createEventHandlers(context) {
         if (options.target) {
           options.target.visible = true;
           options.target.opacity = options.target.opacity === 0 ? 1 : options.target.opacity;
+          
+          // Apply grid snapping to final position if enabled
+          if (context.snapObjectToGrid) {
+            context.snapObjectToGrid(options.target);
+          }
         }
         
         // Try all possible save methods
@@ -827,6 +871,15 @@ export function createEventHandlers(context) {
     canvas.on('object:added', (options) => {
       console.log("Object added:", options.target ? options.target.type : "unknown");
       try {
+        // Apply grid snapping to newly added objects
+        if (options.target && context.snapObjectToGrid) {
+          // Skip snapping for objects being created by drawing tools as they're still being sized
+          // drawingObject is set during shape drawing operations
+          if (!drawingObject || drawingObject !== options.target) {
+            context.snapObjectToGrid(options.target);
+          }
+        }
+        
         if (typeof saveCurrentPageDirectly === 'function') {
           saveCurrentPageDirectly();
         } else if (typeof saveCurrentPage === 'function') {

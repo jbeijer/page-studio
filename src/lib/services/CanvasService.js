@@ -51,6 +51,12 @@ class CanvasService {
   initialize(canvas, options = {}) {
     console.log('CanvasService: Initializing with canvas reference');
     
+    // Verify the canvas parameter is actually a Fabric.js canvas instance
+    if (!canvas || !canvas.add || typeof canvas.add !== 'function' || !canvas.on || typeof canvas.on !== 'function') {
+      console.error('CanvasService: Invalid canvas instance provided. Canvas must be a Fabric.js canvas instance with methods like "add" and "on"');
+      return this;
+    }
+    
     this.canvas = canvas;
     this.options = options;
     this.dispatch = options.dispatch || (() => {});

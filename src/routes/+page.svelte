@@ -10,8 +10,8 @@
     ready = true;
   });
   
-  function createNewDocument() {
-    goto('/editor');
+  function createNewDocument(format = 'A4') {
+    goto(`/editor/new?format=${format}`);
   }
 </script>
 
@@ -28,7 +28,7 @@
     </div>
     
     <div class="flex gap-2">
-      <button class="btn btn-primary" on:click={createNewDocument}>New Document</button>
+      <button class="btn btn-primary" on:click={() => createNewDocument('A4')}>New Document</button>
     </div>
   </header>
   
@@ -46,11 +46,11 @@
         <div class="mt-12 p-6 bg-white rounded-lg shadow-md">
           <h3 class="font-semibold mb-4">Templates</h3>
           <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
-            <button class="p-4 border border-gray-200 rounded hover:border-primary cursor-pointer text-left" on:click={createNewDocument}>
+            <button class="p-4 border border-gray-200 rounded hover:border-primary cursor-pointer text-left" on:click={() => createNewDocument('A4')}>
               <div class="aspect-[1/1.414] bg-gray-100 mb-2 flex items-center justify-center">A4</div>
               <p class="text-sm">Blank A4</p>
             </button>
-            <button class="p-4 border border-gray-200 rounded hover:border-primary cursor-pointer text-left" on:click={createNewDocument}>
+            <button class="p-4 border border-gray-200 rounded hover:border-primary cursor-pointer text-left" on:click={() => createNewDocument('A5')}>
               <div class="aspect-[1/1.414] bg-gray-100 mb-2 flex items-center justify-center">A5</div>
               <p class="text-sm">Blank A5</p>
             </button>

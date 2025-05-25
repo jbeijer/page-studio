@@ -62,9 +62,46 @@
   function handleToolClick(toolType) {
     console.log(`Tool click: ${toolType}`);
     
-    // Use ToolService to set the active tool
-    // This handles both updating the store and configuring the canvas
-    toolService.setActiveTool(toolType);
+    // Try multiple methods to set the active tool
+    
+    // Method 1: Use window.$canvasUtils.setActiveTool if available
+    if (typeof window !== 'undefined' && window.$canvasUtils && window.$canvasUtils.setActiveTool) {
+      console.log(`Using window.$canvasUtils.setActiveTool for tool: ${toolType}`);
+      window.$canvasUtils.setActiveTool(toolType);
+      
+      // Also update the store directly to ensure UI state stays in sync
+      setActiveTool(toolType);
+      
+      // Update context if provided
+      if (context) {
+        context.lastSelectedTool = toolType;
+      }
+      
+      return;
+    }
+    
+    // Method 2: Check if toolService is initialized, and initialize it if possible
+    if (!toolService.initialized && typeof window !== 'undefined') {
+      // Try to get canvas from global window
+      const canvas = window.$canvas;
+      if (canvas && canvas.add && typeof canvas.add === 'function') {
+        console.log("Initializing toolService from DrawingTools with global canvas");
+        toolService.initialize({ canvas });
+      } else {
+        console.warn("Unable to initialize toolService - no valid canvas available");
+      }
+    }
+    
+    // Method 3: Use ToolService or fall back to direct store update
+    if (toolService.initialized) {
+      // Use ToolService to set the active tool
+      // This handles both updating the store and configuring the canvas
+      toolService.setActiveTool(toolType);
+    } else {
+      // Fall back to direct store update if service isn't available
+      console.log("Falling back to direct store update for tool selection");
+      setActiveTool(toolType);
+    }
     
     // Update context if provided
     if (context) {

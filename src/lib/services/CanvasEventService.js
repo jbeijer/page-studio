@@ -70,6 +70,14 @@ class CanvasEventService {
     
     // Extract required properties from options
     this.canvas = options.canvas || null;
+    
+    // Verify the canvas parameter is actually a Fabric.js canvas instance
+    if (!this.canvas || !this.canvas.add || typeof this.canvas.add !== 'function' ||
+        !this.canvas.on || typeof this.canvas.on !== 'function') {
+      console.error('CanvasEventService: Invalid canvas instance provided. Canvas must be a Fabric.js canvas instance with methods like "add" and "on"');
+      return this;
+    }
+    
     this.dispatch = options.dispatch || (() => {});
     this.imageInput = options.imageInput || null;
     this.textFlow = options.textFlow || null;
@@ -823,7 +831,13 @@ class CanvasEventService {
   registerEventHandlers() {
     if (!this.canvas) {
       console.error("CanvasEventService: Cannot register event handlers - No canvas available");
-      return;
+      return false;
+    }
+    
+    // Check if canvas.on is available (must be a proper Fabric.js canvas)
+    if (!this.canvas.on || typeof this.canvas.on !== 'function') {
+      console.error("CanvasEventService: Cannot register event handlers - Canvas doesn't have 'on' method");
+      return false;
     }
     
     // First, remove any existing event handlers to avoid duplication
@@ -835,28 +849,33 @@ class CanvasEventService {
     
     console.log("CanvasEventService: Registering canvas event handlers");
     
-    // Set up mouse event handlers
-    this.canvas.on('mouse:down', (options) => {
-      console.log(`Mouse down event detected. Active tool: ${this.activeTool}`, 
-        options.pointer ? { x: options.pointer.x, y: options.pointer.y } : "No pointer data"
-      );
+    try {
+      // Set up mouse event handlers
+      this.canvas.on('mouse:down', (options) => {
+        console.log(`Mouse down event detected. Active tool: ${this.activeTool}`, 
+          options.pointer ? { x: options.pointer.x, y: options.pointer.y } : "No pointer data"
+        );
+        
+        // Handle right-clicks separately
+        if (options.e && options.e.button === 2) {
+          this.handleRightClick(options);
+          return;
+        }
+        
+        // Call the normal handler for non-right-clicks
+        this.handleMouseDown(options);
+      });
       
-      // Handle right-clicks separately
-      if (options.e && options.e.button === 2) {
-        this.handleRightClick(options);
-        return;
-      }
-      
-      // Call the normal handler for non-right-clicks
-      this.handleMouseDown(options);
-    });
-    
-    this.canvas.on('mouse:move', this.handleMouseMove);
-    this.canvas.on('mouse:up', this.handleMouseUp);
-    this.canvas.on('mouse:dblclick', this.handleDoubleClick);
-    this.canvas.on('selection:created', this.handleObjectSelected);
-    this.canvas.on('selection:updated', this.handleObjectSelected);
-    this.canvas.on('selection:cleared', this.handleSelectionCleared);
+      this.canvas.on('mouse:move', this.handleMouseMove);
+      this.canvas.on('mouse:up', this.handleMouseUp);
+      this.canvas.on('mouse:dblclick', this.handleDoubleClick);
+      this.canvas.on('selection:created', this.handleObjectSelected);
+      this.canvas.on('selection:updated', this.handleObjectSelected);
+      this.canvas.on('selection:cleared', this.handleSelectionCleared);
+    } catch (error) {
+      console.error("Error registering event handlers:", error);
+      return false;
+    }
     
     // Register for objects:loaded event - custom event for page loading completion
     this.canvas.on('objects:loaded', (options) => {
@@ -914,38 +933,65 @@ class CanvasEventService {
     });
     
     // Add keyboard event listener
-    window.addEventListener('keydown', this.handleKeyboard);
+    try {
+      window.addEventListener('keydown', this.handleKeyboard);
+    } catch (keyboardError) {
+      console.warn("Error adding keyboard handler:", keyboardError);
+    }
     
     console.log("CanvasEventService: Canvas event handlers successfully registered");
     
     return true;
+  } catch (error) {
+    console.error("Fatal error during event handler registration:", error);
+    return false;
   }
 
   /**
    * Remove event handlers from the canvas
    */
   removeEventHandlers() {
-    if (!this.canvas) return;
+    if (!this.canvas) {
+      console.warn("CanvasEventService: Cannot remove event handlers - No canvas available");
+      return false;
+    }
+    
+    // Verify the canvas has the 'off' method (must be a proper Fabric.js canvas)
+    if (!this.canvas.off || typeof this.canvas.off !== 'function') {
+      console.error("CanvasEventService: Cannot remove event handlers - Canvas doesn't have 'off' method");
+      return false;
+    }
     
     console.log("CanvasEventService: Removing event handlers");
     
-    // Remove all event handlers
-    this.canvas.off('mouse:down');
-    this.canvas.off('mouse:move');
-    this.canvas.off('mouse:up');
-    this.canvas.off('mouse:dblclick');
-    this.canvas.off('selection:created');
-    this.canvas.off('selection:updated');
-    this.canvas.off('selection:cleared');
-    this.canvas.off('object:modified');
-    this.canvas.off('object:added');
-    this.canvas.off('object:removed');
-    this.canvas.off('objects:loaded');
-    
-    // Remove keyboard event listener
-    window.removeEventListener('keydown', this.handleKeyboard);
-    
-    return true;
+    try {
+      // Remove all event handlers
+      this.canvas.off('mouse:down');
+      this.canvas.off('mouse:move');
+      this.canvas.off('mouse:up');
+      this.canvas.off('mouse:dblclick');
+      this.canvas.off('selection:created');
+      this.canvas.off('selection:updated');
+      this.canvas.off('selection:cleared');
+      this.canvas.off('object:modified');
+      this.canvas.off('object:added');
+      this.canvas.off('object:removed');
+      this.canvas.off('objects:loaded');
+      
+      // Remove keyboard event listener if window is available
+      if (typeof window !== 'undefined') {
+        try {
+          window.removeEventListener('keydown', this.handleKeyboard);
+        } catch (keyboardError) {
+          console.warn("Error removing keyboard handler:", keyboardError);
+        }
+      }
+      
+      return true;
+    } catch (error) {
+      console.error("Error removing event handlers:", error);
+      return false;
+    }
   }
 
   /**

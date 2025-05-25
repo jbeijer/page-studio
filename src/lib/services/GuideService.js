@@ -529,18 +529,33 @@ class GuideService {
     
     console.log('GuideService: Clearing all guides from canvas');
     
-    // Get all guide objects
-    const guides = this.canvas.getObjects().filter(obj => obj.guide);
-    
-    // Remove each guide
-    guides.forEach(guide => {
-      this.canvas.remove(guide);
-    });
-    
-    // Request render
-    this.canvas.requestRenderAll();
-    
-    return true;
+    try {
+      // Check if getObjects method is available
+      if (typeof this.canvas.getObjects !== 'function') {
+        console.warn('GuideService: Canvas is no longer valid (getObjects not available)');
+        return false;
+      }
+      
+      // Get all guide objects
+      const guides = this.canvas.getObjects().filter(obj => obj && obj.guide);
+      
+      // Remove each guide
+      guides.forEach(guide => {
+        if (this.canvas && typeof this.canvas.remove === 'function') {
+          this.canvas.remove(guide);
+        }
+      });
+      
+      // Request render if canvas is still valid
+      if (this.canvas && typeof this.canvas.requestRenderAll === 'function') {
+        this.canvas.requestRenderAll();
+      }
+      
+      return true;
+    } catch (error) {
+      console.warn('GuideService: Error clearing guides', error);
+      return false;
+    }
   }
   
   /**
@@ -611,9 +626,13 @@ class GuideService {
   cleanup() {
     console.log('GuideService: Cleaning up resources');
     
-    // Clear guides from canvas if canvas is available
-    if (this.canvas) {
-      this.clearGuides();
+    try {
+      // Clear guides from canvas if canvas is available
+      if (this.canvas) {
+        this.clearGuides();
+      }
+    } catch (error) {
+      console.warn('GuideService: Error during cleanup', error);
     }
     
     // Clear references

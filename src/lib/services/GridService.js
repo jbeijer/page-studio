@@ -461,11 +461,72 @@ class GridService {
     const gridSize = this.getGridSize();
     if (gridSize <= 0) return point;
     
+    // Get subdivision size if enabled
+    let snapSize = gridSize;
+    if (doc.metadata.grid.subdivisions > 1) {
+      snapSize = gridSize / doc.metadata.grid.subdivisions;
+    }
+    
     // Round to nearest grid point
     return {
-      x: Math.round(point.x / gridSize) * gridSize,
-      y: Math.round(point.y / gridSize) * gridSize
+      x: Math.round(point.x / snapSize) * snapSize,
+      y: Math.round(point.y / snapSize) * snapSize
     };
+  }
+  
+  /**
+   * Snap object bounds to grid
+   * @param {fabric.Object} obj - Fabric.js object to snap
+   * @returns {fabric.Object} The snapped object
+   */
+  snapObjectToGrid(obj) {
+    if (!obj || !this.canvas) return obj;
+    
+    const doc = get(currentDocument);
+    
+    // Skip if no document or grid not enabled or snap not enabled
+    if (!doc?.metadata?.grid || !doc.metadata.grid.snap) return obj;
+    
+    // Get the grid size
+    const gridSize = this.getGridSize();
+    if (gridSize <= 0) return obj;
+    
+    // Get subdivision size if enabled
+    let snapSize = gridSize;
+    if (doc.metadata.grid.subdivisions > 1) {
+      snapSize = gridSize / doc.metadata.grid.subdivisions;
+    }
+    
+    // Snap object position to grid
+    const snappedPosition = this.snapToGrid({ 
+      x: obj.left, 
+      y: obj.top 
+    });
+    
+    // Update object position
+    obj.set({
+      left: snappedPosition.x,
+      top: snappedPosition.y
+    });
+    
+    // For specific object types like rectangles, optionally snap width/height
+    if (obj.type === 'rect' || obj.type === 'textbox' || obj.type === 'image') {
+      const snappedWidth = Math.round(obj.width / snapSize) * snapSize;
+      const snappedHeight = Math.round(obj.height / snapSize) * snapSize;
+      
+      // Only snap to reasonable values to prevent objects from disappearing
+      if (snappedWidth >= snapSize && snappedHeight >= snapSize) {
+        obj.set({
+          width: snappedWidth,
+          height: snappedHeight
+        });
+      }
+    }
+    
+    // Update object coordinates
+    obj.setCoords();
+    
+    return obj;
   }
   
   /**

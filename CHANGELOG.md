@@ -8,6 +8,13 @@ och projektet följer [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 ## [Unreleased]
 
 ### Added
+- Enhanced grid and guides functionality with improved UI
+- Implemented comprehensive grid snapping for object positioning, scaling, and rotation
+- Added detailed guides management with direct guide editing in grid panel
+- Added opacity control for grid customization
+- Implemented SEO-friendly URL routing with slug-based document URLs
+- Created utility functions for slug generation and document ID extraction
+- Added automatic URL updating when document titles change
 - Implemented service-based architecture for improved code organization
 - Created DocumentService to centralize document management
 - Created CanvasService to handle canvas operations
@@ -23,12 +30,37 @@ och projektet följer [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Created TextFlowService to handle text flow between linked textboxes
 - Updated Toolbar.svelte and DrawingTools.svelte to use services instead of direct canvas manipulation
 - Added comprehensive test coverage for all services including MasterPageService, ServiceProvider, and ServiceIntegration
-- Updated architectural documentation with detailed description of service-based architecture
+- Created new service-based-architecture.md document with detailed documentation of the architecture
+- Updated technical-architecture.md with service-based approach details
+- Updated current-progress.md to reflect completion of service-based refactoring
+- Updated DEVNOTES.md with service architecture information and updated file structure
 
 ### Fixed
 - Temporary downgrade from Svelte 5 to Svelte 4 for compatibility
 - Fixed fabric.js initialization syntax for version 5.3.0
 - Fixed accessibility issues in form controls
+- Improved URL structure by replacing query parameters with readable slugs
+- Fixed document navigation to use user-friendly URL format
+- Fixed A4 template format not being properly passed to document creation, causing incorrect dimensions
+- Added format parameter handling in document routes to ensure correct page size
+- Fixed 500 Internal Server Errors when loading documents by properly handling SSR and CSR
+- Added server hooks for better error handling and route management
+- Enhanced client-side environment detection in document loading code
+- Improved IndexedDB availability checking for better error handling
+- Added robust server-side handling for document data requests
+- Fixed server-side errors in document routes by implementing proper client-side only route handling
+- Improved data handling in hooks.server.js to prevent 500 errors in editor routes
+- Enhanced error handling for client-side errors to provide better user feedback
+- Fixed routing for dynamic document slugs by ensuring server never tries to load client-side data
+- Fixed specific handling for /editor/new/ route to prevent 500 errors
+- Improved path extraction in server hooks to handle special routes
+- Enhanced server error handling to return valid data structures for all document routes
+- Added comprehensive validation of browser environment before accessing client-side APIs
+- Added emergency fallback HTML responses for document routes when server-side errors occur
+- Created specialized error handling for the /editor/new route to ensure consistent response
+- Implemented route-specific error detection and recovery strategies based on URL path
+- Enhanced server hooks with better log messages for debugging server-side issues
+- Implemented better client-side error recovery in both [slug] and new document routes
 - Improved Canvas.svelte initialization to use the service-based approach more consistently
 - Centralized service initialization and cleanup with proper dependency ordering
 - Added robust error handling during service initialization and cleanup phases

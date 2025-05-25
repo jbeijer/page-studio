@@ -70,6 +70,12 @@ class DocumentService {
   async createNewDocument(options = { title: 'Untitled Document', format: 'A4', pageCount: 1 }) {
     console.log('DocumentService: Creating new document with options:', options);
     
+    // Ensure we're in a browser environment with required APIs
+    if (typeof window === 'undefined' || !window.indexedDB) {
+      console.error('DocumentService: Cannot create document - Required browser APIs unavailable');
+      throw new Error('Document creation requires browser APIs that are not available');
+    }
+    
     // Reset canvas completely before creating a new document
     if (this.canvasRef) {
       this._resetCanvas();
@@ -130,13 +136,39 @@ class DocumentService {
     // Set the document in the store
     setCurrentDocument(newDoc);
     
-    // Set the first page as active
-    currentPage.set(newDoc.pages[0].id);
+    // Make sure we have at least one page
+    if (newDoc.pages.length === 0) {
+      console.warn('DocumentService: Document has no pages, adding a default page');
+      newDoc.pages.push({
+        id: `page-1`,
+        canvasJSON: JSON.stringify({
+          version: "5.3.0",
+          objects: [],
+          background: "white"
+        }),
+        masterPageId: null,
+        overrides: {},
+        guides: {
+          horizontal: [],
+          vertical: []
+        }
+      });
+    }
     
-    // Update global references
-    if (typeof window !== 'undefined') {
-      window.$document = newDoc;
-      window.$page = newDoc.pages[0].id;
+    // Set the first page as active (with safety check)
+    if (newDoc.pages.length > 0 && newDoc.pages[0] && newDoc.pages[0].id) {
+      currentPage.set(newDoc.pages[0].id);
+      
+      // Update global references
+      if (typeof window !== 'undefined') {
+        window.$document = newDoc;
+        window.$page = newDoc.pages[0].id;
+      }
+    } else {
+      console.error('DocumentService: Failed to set current page - document has no valid pages');
+      if (typeof window !== 'undefined') {
+        window.$document = newDoc;
+      }
     }
     
     // Save the document to storage
@@ -159,6 +191,12 @@ class DocumentService {
     if (!docId) {
       console.error('DocumentService: Cannot load document - No document ID provided');
       return null;
+    }
+    
+    // Check browser environment and required APIs
+    if (typeof window === 'undefined' || !window.indexedDB) {
+      console.error('DocumentService: Cannot load document - Required browser APIs unavailable');
+      throw new Error('Document loading requires browser APIs that are not available');
     }
     
     try {
@@ -189,14 +227,37 @@ class DocumentService {
       setCurrentDocument(loadedDocument);
       
       // Set first page as active if no current page
-      if (!get(currentPage) && loadedDocument.pages.length > 0) {
+      // Make sure we have at least one page
+      if (loadedDocument.pages.length === 0) {
+        console.warn('DocumentService: Loaded document has no pages, adding a default page');
+        loadedDocument.pages.push({
+          id: `page-1`,
+          canvasJSON: JSON.stringify({
+            version: "5.3.0",
+            objects: [],
+            background: "white"
+          }),
+          masterPageId: null,
+          overrides: {},
+          guides: {
+            horizontal: [],
+            vertical: []
+          }
+        });
+      }
+      
+      // Set the current page if it's not already set
+      if (!get(currentPage) && loadedDocument.pages.length > 0 && 
+          loadedDocument.pages[0] && loadedDocument.pages[0].id) {
         currentPage.set(loadedDocument.pages[0].id);
       }
       
       // Update global references
       if (typeof window !== 'undefined') {
         window.$document = loadedDocument;
-        window.$page = get(currentPage);
+        window.$page = get(currentPage) || 
+          (loadedDocument.pages.length > 0 && loadedDocument.pages[0] ? 
+            loadedDocument.pages[0].id : null);
       }
       
       return loadedDocument;
@@ -472,10 +533,13 @@ class DocumentService {
     // Update document in store
     updateDocument(updatedDoc);
     
-    // Switch to the new page
-    currentPage.set(pageId);
-    
-    console.log(`DocumentService: Added new page with ID: ${pageId}`);
+    // Switch to the new page if the ID is valid
+    if (pageId) {
+      currentPage.set(pageId);
+      console.log(`DocumentService: Added new page with ID: ${pageId}`);
+    } else {
+      console.error("DocumentService: Failed to set current page - invalid page ID");
+    }
     
     // Clear canvas for new page
     if (this.canvasRef) {
@@ -518,19 +582,24 @@ class DocumentService {
       this.saveCurrentPage();
     }
     
-    // Set new page as current
-    currentPage.set(pageId);
+    // Set new page as current if ID is valid
+    if (pageId) {
+      currentPage.set(pageId);
+      
+      // Update global reference
+      if (typeof window !== 'undefined') {
+        window.$page = pageId;
+      }
+    } else {
+      console.error("DocumentService: Failed to switch page - invalid page ID");
+      return false;
+    }
     
     // Clear canvas
     if (this.canvasRef) {
       this.canvasRef.clear();
       this.canvasRef.backgroundColor = 'white';
       this.canvasRef.renderAll();
-      
-      // Update global reference
-      if (typeof window !== 'undefined') {
-        window.$page = pageId;
-      }
       
       try {
         // Load page content

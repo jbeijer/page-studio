@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PageStudio Editor - New Document</title>
+  
+  <!-- Emergency shell styles -->
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+      margin: 0;
+      padding: 0;
+      background-color: #f3f4f6;
+      color: #1f2937;
+    }
+    
+    .loading-container {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+    }
+    
+    .loading-content {
+      text-align: center;
+      max-width: 500px;
+      padding: 2rem;
+      background-color: white;
+      border-radius: 8px;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    }
+    
+    .spinner {
+      display: inline-block;
+      width: 50px;
+      height: 50px;
+      border: 4px solid rgba(0,0,0,.1);
+      border-radius: 50%;
+      border-top-color: #3b82f6;
+      animation: spin 1s ease-in-out infinite;
+      margin-bottom: 1rem;
+    }
+    
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    
+    h1 {
+      margin-top: 0;
+      margin-bottom: 0.5rem;
+      font-size: 1.5rem;
+    }
+    
+    p {
+      margin-bottom: 1.5rem;
+      color: #6b7280;
+    }
+    
+    .btn {
+      display: inline-block;
+      padding: 0.5rem 1rem;
+      font-weight: 500;
+      color: white;
+      background-color: #3b82f6;
+      border-radius: 0.25rem;
+      text-decoration: none;
+      cursor: pointer;
+      border: none;
+    }
+    
+    .btn:hover {
+      background-color: #2563eb;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="app">
+    <!-- Loading placeholder -->
+    <div class="loading-container">
+      <div class="loading-content">
+        <div class="spinner"></div>
+        <h1>Creating New Document</h1>
+        <p>Please wait while we prepare your new document...</p>
+        <a href="/" class="btn">Return to Home</a>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Client-side navigation redirect -->
+  <script>
+    // After a short delay, try to redirect through normal SvelteKit navigation
+    setTimeout(() => {
+      // Get URL parameters
+      const urlParams = new URLSearchParams(window.location.search);
+      const format = urlParams.get('format') || 'A4';
+      
+      // Attempt to navigate via client-side routing
+      window.location.href = `/editor/new?format=${format}&ts=${Date.now()}`;
+    }, 3000);
+  </script>
+</body>
+</html>
